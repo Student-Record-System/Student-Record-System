@@ -9,7 +9,7 @@
 | PES2UG24CS252 | M B Divyadharshini |
 | PES2UG24CS253 | M S Nikhil Chowdhary |
 | PES2UG24CS268 | Marapareddy Deekshitha |
-| PES2UG24CS296 | Naija Arun Hodigere |
+| PES2UG24CS296 | Naija Hodigere |
 
 ---
 
