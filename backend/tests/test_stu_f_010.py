@@ -1,0 +1,118 @@
+from app.auth import repository as auth_repository
+from app.auth.models import User
+from app.auth.service import hash_password
+from app.common.roles import ADMIN, STUDENT
+from app.extensions import db
+
+PASSWORD = "Passw0rd!"
+PROFILE = {
+    "srn": "PES2UG24CS010",
+    "full_name": "Asha Rao",
+    "email": "asha.rao@example.com",
+    "phone": "9876543210",
+    "date_of_birth": "2005-04-12",
+    "gender": "Female",
+    "program": "B.Tech",
+    "branch": "Computer Science",
+    "semester": 5,
+}
+
+
+def make_user(login_id, role):
+    return auth_repository.add_user(User(
+        login_id=login_id,
+        password_hash=hash_password(PASSWORD),
+        role=role,
+        is_active=True,
+    ))
+
+
+def token_for(client, login_id):
+    response = client.post(
+        "/api/auth/login", json={"login_id": login_id, "password": PASSWORD}
+    )
+    return response.get_json()["access_token"]
+
+
+def auth_header(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_admin_can_create_and_retrieve_profile(client):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+
+    created = client.post(
+        "/api/students", json=PROFILE, headers=auth_header(token)
+    )
+    retrieved = client.get(
+        f"/api/students/{PROFILE['srn']}", headers=auth_header(token)
+    )
+
+    assert created.status_code == 201
+    assert retrieved.status_code == 200
+    assert retrieved.get_json() == PROFILE | {"address": None}
+
+
+def test_non_admin_cannot_create_profile(client):
+    make_user("student", STUDENT)
+    token = token_for(client, "student")
+
+    response = client.post(
+        "/api/students", json=PROFILE, headers=auth_header(token)
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"]["code"] == "ERR_FORBIDDEN"
+
+
+def test_profile_requires_mandatory_fields(client):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+    incomplete = {key: value for key, value in PROFILE.items() if key != "branch"}
+
+    response = client.post(
+        "/api/students", json=incomplete, headers=auth_header(token)
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "ERR_VALIDATION"
+
+
+def test_profile_srn_must_be_unique(client):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+    headers = auth_header(token)
+
+    assert client.post("/api/students", json=PROFILE, headers=headers).status_code == 201
+    duplicate = client.post("/api/students", json=PROFILE, headers=headers)
+
+    assert duplicate.status_code == 409
+    assert duplicate.get_json()["error"]["code"] == "ERR_DUPLICATE_SRN"
+
+
+def test_admin_can_update_profile(client):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+    headers = auth_header(token)
+    client.post("/api/students", json=PROFILE, headers=headers)
+    updated = PROFILE | {"semester": 6, "address": "Bengaluru"}
+
+    response = client.put(
+        f"/api/students/{PROFILE['srn']}", json=updated, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == updated
+
+
+def test_missing_profile_returns_not_found(client):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+
+    response = client.get(
+        "/api/students/UNKNOWN", headers=auth_header(token)
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "ERR_NOT_FOUND"
