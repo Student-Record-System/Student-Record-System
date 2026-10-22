@@ -10,7 +10,7 @@ from app.extensions import db, jwt
 # One folder per module (SAD 4.1). A module is picked up automatically
 # if app/<name>/routes.py exists and defines a Blueprint called bp.
 MODULES = ["health", "auth", "profile", "enrollment", "attendance",
-           "grades", "fees", "reports", "admin"]
+           "grades", "fees", "reports", "admin", "course"]
 
 
 def register_modules(app):
