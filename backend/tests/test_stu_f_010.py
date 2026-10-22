@@ -51,7 +51,11 @@ def test_admin_can_create_and_retrieve_profile(client):
 
     assert created.status_code == 201
     assert retrieved.status_code == 200
-    assert retrieved.get_json() == PROFILE | {"address": None}
+    assert retrieved.get_json() == PROFILE | {
+        "address": None,
+        "emergency_contact_name": None,
+        "emergency_contact_phone": None,
+    }
 
 
 def test_non_admin_cannot_create_profile(client):
@@ -103,7 +107,10 @@ def test_admin_can_update_profile(client):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == updated
+    assert response.get_json() == updated | {
+        "emergency_contact_name": None,
+        "emergency_contact_phone": None,
+    }
 
 
 def test_missing_profile_returns_not_found(client):
@@ -116,3 +123,90 @@ def test_missing_profile_returns_not_found(client):
 
     assert response.status_code == 404
     assert response.get_json()["error"]["code"] == "ERR_NOT_FOUND"
+
+
+def test_student_can_view_own_profile(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+
+    response = client.get(
+        "/api/students/me",
+        headers=auth_header(token_for(client, PROFILE["srn"])),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["srn"] == PROFILE["srn"]
+
+
+def test_student_change_is_pending_until_admin_approves(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+    student_headers = auth_header(token_for(client, PROFILE["srn"]))
+
+    submitted = client.patch(
+        "/api/students/me",
+        json={
+            "phone": "9123456780",
+            "address": "Bengaluru",
+            "emergency_contact_name": "Ravi Rao",
+            "emergency_contact_phone": "9988776655",
+        },
+        headers=student_headers,
+    )
+
+    assert submitted.status_code == 202
+    request_body = submitted.get_json()
+    assert request_body["status"] == "Pending Verification"
+
+    before_approval = client.get("/api/students/me", headers=student_headers)
+    assert before_approval.get_json()["phone"] == PROFILE["phone"]
+
+    approved = client.post(
+        f"/api/students/requests/{request_body['id']}/approve",
+        headers=admin_headers,
+    )
+    after_approval = client.get("/api/students/me", headers=student_headers)
+
+    assert approved.status_code == 200
+    assert approved.get_json()["status"] == "Approved"
+    assert after_approval.get_json()["phone"] == "9123456780"
+    assert after_approval.get_json()["emergency_contact_name"] == "Ravi Rao"
+
+
+def test_student_cannot_update_academic_fields(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+
+    response = client.patch(
+        "/api/students/me",
+        json={"semester": 6},
+        headers=auth_header(token_for(client, PROFILE["srn"])),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "ERR_VALIDATION"
+
+
+def test_student_cannot_submit_second_pending_change(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+    student_headers = auth_header(token_for(client, PROFILE["srn"]))
+    payload = {"phone": "9123456780"}
+
+    assert client.patch(
+        "/api/students/me", json=payload, headers=student_headers
+    ).status_code == 202
+    duplicate = client.patch(
+        "/api/students/me", json=payload, headers=student_headers
+    )
+
+    assert duplicate.status_code == 409
+    assert duplicate.get_json()["error"]["code"] == "ERR_CHANGE_PENDING"
