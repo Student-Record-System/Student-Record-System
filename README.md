@@ -30,5 +30,5 @@ The Student Record System is a record-keeping application for maintaining studen
 
 ## Tech Stack
 
-- Language: C / C++
+- Language: Python
 
