@@ -5,4 +5,4 @@ bcrypt==4.2.0
 PyMySQL==1.1.1
 cryptography==43.0.1
 python-dotenv==1.0.1
-pytest==8.3.3
+pytest==9.1.1
