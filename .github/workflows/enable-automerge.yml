@@ -1,0 +1,21 @@
+name: Enable merge-commit auto-merge
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enable:
+    # A maintainer must explicitly apply this label. GitHub only merges after
+    # every required review and status check has passed.
+    if: github.event.label.name == 'automerge'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge using a merge commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --merge
