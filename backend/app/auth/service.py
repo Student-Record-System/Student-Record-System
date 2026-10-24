@@ -1,3 +1,4 @@
+from datetime import timedelta
 import re
 import secrets
 import string
@@ -8,7 +9,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth import repository
 from app.auth.models import User
-from app.common.errors import AuthError, ConflictError, ValidationError
+from app.common.audit import record_event
+from app.common.clock import Clock
+from app.common.errors import (
+    AuthError,
+    ConflictError,
+    LockedError,
+    ValidationError,
+)
 from app.common.notifications import get_notification_client
 from app.common.roles import ALL_ROLES
 from app.extensions import db
@@ -30,14 +38,81 @@ def verify_password(plain, hashed):
 
 def login(login_id, password):
     user = repository.get_user_by_login_id(login_id)
+
     if user is None:
         bcrypt.checkpw(password.encode("utf-8"), _DUMMY_HASH)
         raise AuthError(GENERIC_LOGIN_ERROR)
 
-    # STU-F-003 (account lockout) adds its check here, before the password check.
-
-    if not verify_password(password, user.password_hash) or not user.is_active:
+    # Do not count attempts against inactive accounts.
+    if not user.is_active:
+        verify_password(password, user.password_hash)
         raise AuthError(GENERIC_LOGIN_ERROR)
+
+    now = Clock.now()
+
+    # Reject login attempts while the account is locked.
+    if user.locked_until is not None:
+        if user.locked_until > now:
+            raise LockedError(
+                "Your account is temporarily locked. Please try again later."
+            )
+
+        # The lockout period has expired; begin a fresh sequence.
+        user.locked_until = None
+        user.failed_attempts = 0
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+    # Incorrect passwords increment the consecutive-failure counter.
+    if not verify_password(password, user.password_hash):
+        user.failed_attempts += 1
+
+        if user.failed_attempts >= 5:
+            user.locked_until = now + timedelta(minutes=15)
+
+            record_event(
+                "ACCOUNT_LOCKED",
+                user_id=user.id,
+                login_id=user.login_id,
+                details={
+                    "failed_attempts": user.failed_attempts,
+                    "lockout_minutes": 15,
+                },
+            )
+
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                raise
+
+            raise LockedError(
+                "Your account has been locked for 15 minutes "
+                "after 5 consecutive failed login attempts."
+            )
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+        raise AuthError(GENERIC_LOGIN_ERROR)
+
+    # Successful login resets consecutive failures and any expired lock.
+    if user.failed_attempts != 0 or user.locked_until is not None:
+        user.failed_attempts = 0
+        user.locked_until = None
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
 
     token = create_access_token(
         identity=str(user.id),  # must be text
@@ -74,7 +149,7 @@ def create_user(login_id, email, role):
         db.session.rollback()
         raise ConflictError("A user with this ID already exists.", "ERR_USER_EXISTS")
 
-    # TODO: record this action with audit_service once audit logging exists.
+    # TODO: Account creation auditing is outside the scope of STU-F-003.
     body = (
         "Your Student Record System account has been created.\n"
         f"Login ID: {login_id}\n"
