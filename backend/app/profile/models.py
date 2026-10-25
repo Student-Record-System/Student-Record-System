@@ -39,3 +39,24 @@ class ProfileChangeRequest(db.Model):
     status = db.Column(db.String(20), nullable=False, default="Pending Verification")
     created_at = db.Column(db.DateTime, nullable=False, default=Clock.now)
     reviewed_at = db.Column(db.DateTime, nullable=True)
+
+
+class StudentDocument(db.Model):
+    __tablename__ = "student_documents"
+
+    id = db.Column(db.Integer, primary_key=True)
+    profile_id = db.Column(
+        db.Integer,
+        db.ForeignKey("student_profiles.id"),
+        nullable=False,
+        index=True,
+    )
+    original_name = db.Column(db.String(255), nullable=False)
+    stored_name = db.Column(db.String(255), nullable=False, unique=True)
+    content_type = db.Column(db.String(100), nullable=False)
+    size_bytes = db.Column(db.Integer, nullable=False)
+    uploaded_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=Clock.now,
+    )
