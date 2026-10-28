@@ -32,3 +32,10 @@ def set_prerequisites(course_code):
     return jsonify(
         service.set_prerequisites(course_code, request.get_json(silent=True))
     ), 200
+
+
+@bp.get("/enrollments/current")
+@roles_required(STUDENT)
+def current_enrollments():
+    result = service.current_semester_courses(current_user().login_id)
+    return jsonify(result), 200

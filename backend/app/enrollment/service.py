@@ -145,3 +145,27 @@ def enroll(srn, data):
             "You are already enrolled in this course.", "ERR_ALREADY_ENROLLED"
         )
     return _as_dict(enrollment)
+
+
+def current_semester_courses(srn):
+    """Return the student's current-semester courses and total credits."""
+    semester = gateways.get_student_semester(srn)
+
+    records = repository.current_semester_enrollments(srn, semester)
+
+    courses = []
+    total_credits = 0
+
+    for enrollment, course in records:
+        courses.append({
+            "course_code": course.code,
+            "title": course.title,
+            "credits": course.credits,
+        })
+        total_credits += course.credits
+
+    return {
+        "semester": semester,
+        "courses": courses,
+        "total_credits": total_credits,
+    }
