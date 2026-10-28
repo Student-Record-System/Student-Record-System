@@ -36,3 +36,35 @@ def create_user():
         "id": user.id, "login_id": user.login_id,
         "email": user.email, "role": user.role,
     }), 201
+
+
+@bp.post("/auth/forgot-password")
+def forgot_password():
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+
+    if not isinstance(email, str) or not email.strip():
+        raise ValidationError("A valid email address is required.")
+
+    return jsonify(service.request_password_reset(email)), 200
+
+
+@bp.post("/auth/reset-password")
+def reset_forgotten_password():
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+    otp = data.get("otp")
+    new_password = data.get("new_password")
+
+    if not isinstance(email, str) or not email.strip():
+        raise ValidationError("A valid email address is required.")
+
+    if not isinstance(otp, str) or not otp.isdigit() or len(otp) != 6:
+        raise ValidationError("OTP must be a 6-digit code.")
+
+    if not isinstance(new_password, str) or len(new_password) < 8:
+        raise ValidationError("New password must contain at least 8 characters.")
+
+    return jsonify(
+        service.reset_password(email, otp, new_password)
+    ), 200

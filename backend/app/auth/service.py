@@ -20,6 +20,7 @@ from app.common.errors import (
 from app.common.notifications import get_notification_client
 from app.common.roles import ALL_ROLES
 from app.extensions import db
+from app.auth.otp_model import PasswordResetOTP
 
 GENERIC_LOGIN_ERROR = "Invalid ID or password."
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -160,3 +161,95 @@ def create_user(login_id, email, role):
         email, "Your Student Record System account", body, "ACCOUNT_CREATED"
     )
     return user
+
+
+OTP_EXPIRY_MINUTES = 10
+OTP_GENERIC_MESSAGE = (
+    "If an account exists for that email, "
+    "a password reset OTP has been sent."
+)
+
+
+def request_password_reset(email):
+    email = email.strip().lower()
+
+    user = db.session.execute(
+        db.select(User).where(db.func.lower(User.email) == email)
+    ).scalar_one_or_none()
+
+    # Use the same response whether the account exists or not.
+    if user is None:
+        return {"message": OTP_GENERIC_MESSAGE}
+
+    now = Clock.now()
+
+    # Invalidate previous unused OTPs for this user.
+    db.session.execute(
+        db.delete(PasswordResetOTP).where(
+            PasswordResetOTP.user_id == user.id,
+            PasswordResetOTP.used_at.is_(None),
+        )
+    )
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+
+    reset_otp = PasswordResetOTP(
+        user_id=user.id,
+        otp_hash=hash_password(otp),
+        expires_at=now + timedelta(minutes=OTP_EXPIRY_MINUTES),
+    )
+
+    db.session.add(reset_otp)
+    db.session.commit()
+
+    try:
+        get_notification_client().send(
+            user.email,
+            "Student Record System password reset",
+            (
+                f"Your password reset OTP is: {otp}\n"
+                "It expires in 10 minutes. "
+                "If you did not request this, ignore this message."
+            ),
+            "PASSWORD_RESET_OTP",
+        )
+    except Exception:
+        db.session.rollback()
+        raise
+
+    return {"message": OTP_GENERIC_MESSAGE}
+
+
+def reset_password(email, otp, new_password):
+    email = email.strip().lower()
+
+    user = db.session.execute(
+        db.select(User).where(db.func.lower(User.email) == email)
+    ).scalar_one_or_none()
+
+    if user is None:
+        raise ValidationError("Invalid or expired OTP.")
+
+    now = Clock.now()
+
+    reset_otp = db.session.execute(
+        db.select(PasswordResetOTP)
+        .where(
+            PasswordResetOTP.user_id == user.id,
+            PasswordResetOTP.used_at.is_(None),
+            PasswordResetOTP.expires_at > now,
+        )
+        .order_by(PasswordResetOTP.created_at.desc())
+    ).scalars().first()
+
+    if reset_otp is None or not verify_password(otp, reset_otp.otp_hash):
+        raise ValidationError("Invalid or expired OTP.")
+
+    user.password_hash = hash_password(new_password)
+    reset_otp.used_at = now
+    user.failed_attempts = 0
+    user.locked_until = None
+
+    db.session.commit()
+
+    return {"message": "Password has been reset successfully."}
