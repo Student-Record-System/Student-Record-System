@@ -33,6 +33,7 @@ export default function StudentProfiles() {
   const [editingSrn, setEditingSrn] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [history, setHistory] = useState([]);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -43,6 +44,7 @@ export default function StudentProfiles() {
     setEditingSrn(null);
     setMessage("");
     setError("");
+    setHistory([]);
   }
 
   async function handleLookup(event) {
@@ -53,6 +55,8 @@ export default function StudentProfiles() {
       const data = await api(`/students/${encodeURIComponent(lookupSrn.trim())}`);
       setForm({ ...EMPTY, ...data, address: data.address ?? "", semester: String(data.semester) });
       setEditingSrn(data.srn);
+      const historyData = await api(`/students/${encodeURIComponent(data.srn)}/history`);
+      setHistory(historyData.history);
       setMessage(`Loaded ${data.srn}. Edit the fields and save to update it.`);
     } catch (err) {
       setError(err.message);
@@ -68,6 +72,8 @@ export default function StudentProfiles() {
     try {
       if (editingSrn) {
         await api(`/students/${encodeURIComponent(editingSrn)}`, { method: "PUT", body: payload });
+        const historyData = await api(`/students/${encodeURIComponent(editingSrn)}/history`);
+        setHistory(historyData.history);
         setMessage(`Profile ${editingSrn} updated.`);
       } else {
         const created = await api("/students", { method: "POST", body: payload });
@@ -130,6 +136,30 @@ export default function StudentProfiles() {
           </button>
         </div>
       </form>
+
+      {editingSrn && (
+        <section>
+          <h3>Profile history</h3>
+          {history.length === 0 ? (
+            <p>No changes recorded.</p>
+          ) : (
+            <ul>
+              {history.map((event, index) => (
+                <li key={`${event.timestamp}-${index}`}>
+                  <strong>{event.editor}</strong> at {new Date(event.timestamp).toLocaleString()}
+                  <ul>
+                    {Object.entries(event.changes).map(([field, change]) => (
+                      <li key={field}>
+                        {field}: {String(change.before)} to {String(change.after)}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </section>
   );
 }
