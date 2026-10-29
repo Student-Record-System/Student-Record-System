@@ -129,6 +129,66 @@ def test_enrollment_rejected_when_window_is_not_configured(client, student_heade
     assert error_code(response) == "ERR_WINDOW_CLOSED"
 
 
+def test_enrollment_rejected_when_semester_credit_limit_would_be_exceeded(
+    client, student_headers, admin_headers
+):
+    make_course("CS301", credits=4)
+    make_course("CS302", credits=3)
+    set_window(-1, 1)
+    configured = client.put(
+        "/api/config/credit-limit",
+        json={"semester": 5, "max_credits": 6},
+        headers=admin_headers,
+    )
+
+    assert configured.status_code == 200
+    assert enroll(client, student_headers, "CS301").status_code == 201
+    response = enroll(client, student_headers, "CS302")
+
+    assert response.status_code == 409
+    assert error_code(response) == "ERR_CREDIT_LIMIT"
+    assert "limit of 6 credits" in response.get_json()["error"]["message"]
+    assert enrollment_repository.get_enrollment(SRN, "CS302") is None
+
+
+def test_admin_can_configure_and_read_semester_credit_limit(client, admin_headers):
+    saved = client.put(
+        "/api/config/credit-limit",
+        json={"semester": 5, "max_credits": 18},
+        headers=admin_headers,
+    )
+    read = client.get("/api/config/credit-limit/5", headers=admin_headers)
+
+    assert saved.status_code == 200
+    assert read.status_code == 200
+    assert read.get_json() == {"semester": 5, "max_credits": 18}
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"semester": 0, "max_credits": 18},
+    {"semester": 5, "max_credits": 0},
+    {"semester": 5, "max_credits": "18"},
+])
+def test_invalid_semester_credit_limit_is_rejected(client, admin_headers, body):
+    response = client.put(
+        "/api/config/credit-limit", json=body, headers=admin_headers
+    )
+
+    assert response.status_code == 400
+    assert error_code(response) == "ERR_VALIDATION"
+
+
+def test_student_cannot_configure_semester_credit_limit(client, student_headers):
+    response = client.put(
+        "/api/config/credit-limit",
+        json={"semester": 5, "max_credits": 18},
+        headers=student_headers,
+    )
+
+    assert response.status_code == 403
+
+
 def test_enrollment_closes_when_time_moves_past_the_window(client, student_headers):
     make_course("CS301")
     make_course("CS302")
