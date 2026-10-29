@@ -26,6 +26,18 @@ def set_window():
     return jsonify(service.set_window(request.get_json(silent=True))), 200
 
 
+@bp.get("/config/credit-limit/<int:semester>")
+@roles_required(ADMIN)
+def get_credit_limit(semester):
+    return jsonify(service.get_credit_limit(semester)), 200
+
+
+@bp.put("/config/credit-limit")
+@roles_required(ADMIN)
+def set_credit_limit():
+    return jsonify(service.set_credit_limit(request.get_json(silent=True))), 200
+
+
 @bp.put("/courses/<string:course_code>/prerequisites")
 @roles_required(ADMIN)
 def set_prerequisites(course_code):
