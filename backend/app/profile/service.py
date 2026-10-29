@@ -1,5 +1,6 @@
 from datetime import date
 
+from app.common.audit import record_event
 from app.common.clock import Clock
 from app.common.errors import ConflictError, NotFoundError, ValidationError
 from app.profile import repository
@@ -86,6 +87,30 @@ def _as_dict(profile):
     }
 
 
+def _json_value(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _change_details(profile, values):
+    return {
+        field: {
+            "before": _json_value(getattr(profile, field)),
+            "after": _json_value(value),
+        }
+        for field, value in values.items()
+        if getattr(profile, field) != value
+    }
+
+
+def _history_dict(event):
+    return {
+        "event_type": event.event_type,
+        "editor": event.login_id,
+        "timestamp": event.created_at.isoformat(),
+        "changes": event.details.get("changes", {}),
+    }
+
+
 def _validated_changes(data):
     if not isinstance(data, dict):
         raise ValidationError("A JSON object is required.")
@@ -139,7 +164,7 @@ def _change_request_dict(change_request):
     }
 
 
-def approve_change(request_id):
+def approve_change(request_id, editor):
     change_request = repository.get_change_request(request_id)
     if change_request is None:
         raise NotFoundError("Profile change request not found.")
@@ -149,12 +174,25 @@ def approve_change(request_id):
             "ERR_CHANGE_REVIEWED",
         )
     profile = repository.get_by_id(change_request.profile_id)
+    values = {
+        field: getattr(change_request, field)
+        for field in PERMITTED_FIELDS
+        if getattr(change_request, field) is not None
+    }
+    changes = _change_details(profile, values)
     for field in PERMITTED_FIELDS:
-        value = getattr(change_request, field)
-        if value is not None:
-            setattr(profile, field, value)
+        if field in values:
+            setattr(profile, field, values[field])
     change_request.status = "Approved"
     change_request.reviewed_at = Clock.now()
+    if changes:
+        record_event(
+            "STUDENT_PROFILE_UPDATED",
+            user_id=editor.id,
+            login_id=editor.login_id,
+            profile_id=profile.id,
+            details={"changes": changes},
+        )
     repository.save_change_request(change_request)
     return _change_request_dict(change_request)
 
@@ -187,13 +225,29 @@ def get(srn):
     return _as_dict(profile)
 
 
-def update(srn, data):
+def update(srn, data, editor):
     profile = repository.get_by_srn(srn)
     if profile is None:
         raise NotFoundError("Student profile not found.")
     values = _validated_values(data)
     if values["srn"] != srn and repository.get_by_srn(values["srn"]) is not None:
         raise ConflictError("A student profile with this SRN already exists.", "ERR_DUPLICATE_SRN")
+    changes = _change_details(profile, values)
     for field, value in values.items():
         setattr(profile, field, value)
+    if changes:
+        record_event(
+            "STUDENT_PROFILE_UPDATED",
+            user_id=editor.id,
+            login_id=editor.login_id,
+            profile_id=profile.id,
+            details={"changes": changes},
+        )
     return _as_dict(repository.save(profile))
+
+
+def history(srn):
+    profile = repository.get_by_srn(srn)
+    if profile is None:
+        raise NotFoundError("Student profile not found.")
+    return [_history_dict(event) for event in repository.get_history(profile.id)]
