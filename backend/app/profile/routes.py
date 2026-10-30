@@ -4,6 +4,14 @@ from app.auth.access import current_user, roles_required
 from app.common.roles import ADMIN, STUDENT
 from app.profile import service
 
+from flask import send_file
+from flask_jwt_extended import get_jwt
+
+from app.common.errors import NotFoundError
+from app.common.filestore import FileStore, FileStoreError
+from app.common.roles import ADMIN, STUDENT
+from app.profile import document_service
+
 bp = Blueprint("profile", __name__, url_prefix="/api")
 
 
@@ -49,3 +57,36 @@ def approve_profile_change(request_id):
 @roles_required(ADMIN)
 def reject_profile_change(request_id):
     return jsonify(service.reject_change(request_id)), 200
+
+
+@bp.post("/students/<string:srn>/documents")
+@roles_required(ADMIN)
+def upload_student_document(srn):
+    uploaded_file = request.files.get("file")
+    result = document_service.upload_document(srn, uploaded_file)
+    return jsonify(result), 201
+
+
+@bp.get("/students/<string:srn>/documents/<int:document_id>")
+@roles_required(ADMIN, STUDENT)
+def get_student_document(srn, document_id):
+    user = current_user()
+    role = get_jwt().get("role")
+
+    document = document_service.get_document(
+        srn, document_id, user, role
+    )
+
+    try:
+        file_handle = FileStore().open(document.stored_name)
+    except FileNotFoundError as exc:
+        raise NotFoundError("Stored document not found.") from exc
+    except FileStoreError as exc:
+        raise NotFoundError("Stored document not found.") from exc
+
+    return send_file(
+        file_handle,
+        mimetype=document.content_type,
+        as_attachment=True,
+        download_name=document.original_name,
+    )
