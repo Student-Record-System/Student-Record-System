@@ -7,7 +7,7 @@ from app.profile import service
 from flask import send_file
 from flask_jwt_extended import get_jwt
 
-from app.common.errors import NotFoundError
+from app.common.errors import ForbiddenError, NotFoundError
 from app.common.filestore import FileStore, FileStoreError
 from app.common.roles import ADMIN, STUDENT
 from app.profile import document_service
@@ -44,13 +44,24 @@ def get_student(srn):
 @bp.put("/students/<string:srn>")
 @roles_required(ADMIN)
 def update_student(srn):
-    return jsonify(service.update(srn, request.get_json(silent=True))), 200
+    return jsonify(service.update(
+        srn, request.get_json(silent=True), current_user()
+    )), 200
+
+
+@bp.get("/students/<string:srn>/history")
+@roles_required(ADMIN, STUDENT)
+def get_student_history(srn):
+    user = current_user()
+    if get_jwt().get("role") == STUDENT and user.login_id != srn:
+        raise ForbiddenError("You do not have permission to view this history.")
+    return jsonify({"history": service.history(srn)}), 200
 
 
 @bp.post("/students/requests/<int:request_id>/approve")
 @roles_required(ADMIN)
 def approve_profile_change(request_id):
-    return jsonify(service.approve_change(request_id)), 200
+    return jsonify(service.approve_change(request_id, current_user())), 200
 
 
 @bp.post("/students/requests/<int:request_id>/reject")

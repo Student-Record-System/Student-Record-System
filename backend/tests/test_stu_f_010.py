@@ -1,6 +1,7 @@
 from app.auth import repository as auth_repository
 from app.auth.models import User
 from app.auth.service import hash_password
+from app.common.models import AuditEvent
 from app.common.roles import ADMIN, STUDENT
 from app.extensions import db
 
@@ -210,3 +211,89 @@ def test_student_cannot_submit_second_pending_change(client):
 
     assert duplicate.status_code == 409
     assert duplicate.get_json()["error"]["code"] == "ERR_CHANGE_PENDING"
+
+
+def test_profile_history_records_admin_editor_timestamp_and_changes(client, app):
+    make_user("admin", ADMIN)
+    token = token_for(client, "admin")
+    headers = auth_header(token)
+    client.post("/api/students", json=PROFILE, headers=headers)
+
+    response = client.put(
+        f"/api/students/{PROFILE['srn']}",
+        json=PROFILE | {"semester": 6, "address": "Bengaluru"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    history = client.get(
+        f"/api/students/{PROFILE['srn']}/history", headers=headers
+    )
+
+    assert history.status_code == 200
+    event = history.get_json()["history"][0]
+    assert event["event_type"] == "STUDENT_PROFILE_UPDATED"
+    assert event["editor"] == "admin"
+    assert event["timestamp"]
+    assert event["changes"]["semester"] == {"before": 5, "after": 6}
+    assert event["changes"]["address"] == {"before": None, "after": "Bengaluru"}
+
+    with app.app_context():
+        saved = db.session.execute(
+            db.select(AuditEvent).filter_by(
+                event_type="STUDENT_PROFILE_UPDATED"
+            )
+        ).scalar_one()
+        assert saved.login_id == "admin"
+
+
+def test_approved_student_change_is_recorded_and_history_is_newest_first(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    student_headers = auth_header(token_for(client, PROFILE["srn"]))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+
+    submitted = client.patch(
+        "/api/students/me",
+        json={"phone": "9123456780"},
+        headers=student_headers,
+    )
+    client.post(
+        f"/api/students/requests/{submitted.get_json()['id']}/approve",
+        headers=admin_headers,
+    )
+    client.put(
+        f"/api/students/{PROFILE['srn']}",
+        json=PROFILE | {"semester": 6},
+        headers=admin_headers,
+    )
+
+    history = client.get(
+        f"/api/students/{PROFILE['srn']}/history", headers=admin_headers
+    )
+
+    assert history.status_code == 200
+    events = history.get_json()["history"]
+    assert len(events) == 2
+    assert events[0]["changes"]["semester"]["after"] == 6
+    assert events[1]["changes"]["phone"] == {
+        "before": PROFILE["phone"],
+        "after": "9123456780",
+    }
+
+
+def test_student_cannot_view_another_students_profile_history(client):
+    make_user(PROFILE["srn"], STUDENT)
+    make_user("other-student", STUDENT)
+    make_user("admin", ADMIN)
+    admin_headers = auth_header(token_for(client, "admin"))
+    client.post("/api/students", json=PROFILE, headers=admin_headers)
+
+    response = client.get(
+        f"/api/students/{PROFILE['srn']}/history",
+        headers=auth_header(token_for(client, "other-student")),
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"]["code"] == "ERR_FORBIDDEN"
