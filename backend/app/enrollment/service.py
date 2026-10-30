@@ -11,6 +11,8 @@ from app.extensions import db
 
 WINDOW_START_KEY = "enrollment_window_start"
 WINDOW_END_KEY = "enrollment_window_end"
+CREDIT_LIMIT_PREFIX = "semester_credit_limit:"
+DEFAULT_CREDIT_LIMIT = 24
 
 
 def _course_code(value, field="course_code"):
@@ -31,6 +33,18 @@ def _parse_datetime(value, field):
     if parsed.tzinfo is not None:
         raise ValidationError(f"{field} must not include a time zone; times are UTC.")
     return parsed
+
+
+def _semester(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise ValidationError("semester must be an integer between 1 and 8.")
+    return value
+
+
+def _credit_limit(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValidationError("max_credits must be a positive integer.")
+    return value
 
 
 def _as_dict(enrollment):
@@ -76,6 +90,32 @@ def _window_is_open():
     )
 
 
+# ---- semester credit limits ----
+
+def _credit_limit_key(semester):
+    return f"{CREDIT_LIMIT_PREFIX}{semester}"
+
+
+def get_credit_limit(semester):
+    semester = _semester(semester)
+    configured = get_setting(_credit_limit_key(semester))
+    return {
+        "semester": semester,
+        "max_credits": (
+            int(configured) if configured is not None else DEFAULT_CREDIT_LIMIT
+        ),
+    }
+
+
+def set_credit_limit(data):
+    if not isinstance(data, dict):
+        raise ValidationError("A JSON object is required.")
+    semester = _semester(data.get("semester"))
+    max_credits = _credit_limit(data.get("max_credits"))
+    set_setting(_credit_limit_key(semester), str(max_credits))
+    return get_credit_limit(semester)
+
+
 # ---- prerequisites ----
 
 def set_prerequisites(course_code, data):
@@ -100,6 +140,12 @@ def set_prerequisites(course_code, data):
 
 
 # ---- enrollment ----
+
+def _current_credit_total(srn, semester):
+    return sum(
+        course.credits
+        for _, course in repository.current_semester_enrollments(srn, semester)
+    )
 
 def enroll(srn, data):
     if not isinstance(data, dict):
@@ -132,7 +178,15 @@ def enroll(srn, data):
             "ERR_PREREQ_NOT_MET",
         )
 
-    # STU-F-023 (credit limit) and STU-F-054 (fee hold) add their checks here.
+    current_credits = _current_credit_total(srn, student_semester)
+    max_credits = get_credit_limit(student_semester)["max_credits"]
+    if current_credits + course["credits"] > max_credits:
+        raise ConflictError(
+            f"Enrollment would exceed the semester credit limit of {max_credits} "
+            f"credits. You have {current_credits} credits enrolled and this "
+            f"course adds {course['credits']} credits.",
+            "ERR_CREDIT_LIMIT",
+        )
 
     enrollment = Enrollment(
         srn=srn, course_code=code, semester=course["semester"], status=ENROLLED
