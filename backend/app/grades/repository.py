@@ -1,5 +1,5 @@
 from app.extensions import db
-from app.grades.models import StudentMark
+from app.grades.models import PENDING_APPROVAL, StudentMark
 
 
 def get_mark(course_code, srn):
@@ -13,5 +13,26 @@ def get_mark(course_code, srn):
 
 def add_mark(mark):
     db.session.add(mark)
+    db.session.commit()
+    return mark
+
+
+def get_pending_marks():
+    return db.session.execute(
+        db.select(StudentMark)
+        .filter_by(status=PENDING_APPROVAL)
+        .order_by(StudentMark.course_code, StudentMark.srn)
+    ).scalars().all()
+
+
+def get_student_approved_marks(srn):
+    return db.session.execute(
+        db.select(StudentMark)
+        .filter_by(srn=srn, status="Approved")
+        .order_by(StudentMark.course_code)
+    ).scalars().all()
+
+
+def save_mark(mark):
     db.session.commit()
     return mark
