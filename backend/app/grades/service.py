@@ -91,3 +91,47 @@ def submit_marks(course_code, faculty, data):
     )
 
     return _as_dict(repository.add_mark(mark))
+
+
+APPROVED = "Approved"
+
+
+def review_pending_marks():
+    return [_as_dict(mark) for mark in repository.get_pending_marks()]
+
+
+def approve_marks(course_code, srn):
+    course_code = course_code.strip().upper()
+    srn = srn.strip()
+
+    mark = repository.get_mark(course_code, srn)
+    if mark is None:
+        raise NotFoundError("Marks not found.")
+
+    if mark.status != PENDING_APPROVAL:
+        raise ConflictError(
+            "Only marks pending approval can be approved.",
+            "ERR_MARKS_NOT_PENDING",
+        )
+
+    enrollment = enrollment_repository.get_enrollment(srn, course_code)
+    if enrollment is None:
+        raise NotFoundError("Student enrollment not found.")
+
+    if enrollment.status != ENROLLED:
+        raise ConflictError(
+            "Only currently enrolled students can have results approved.",
+            "ERR_ENROLLMENT_NOT_ACTIVE",
+        )
+
+    mark.status = APPROVED
+    enrollment_repository.complete_enrollment(srn, course_code)
+    return _as_dict(repository.save_mark(mark))
+
+
+def student_results(student_srn):
+    return [
+        _as_dict(mark)
+        for mark in repository.get_student_approved_marks(student_srn)
+    ]
+
