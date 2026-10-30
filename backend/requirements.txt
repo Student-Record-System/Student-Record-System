@@ -6,3 +6,5 @@ PyMySQL==1.1.1
 cryptography==43.0.1
 python-dotenv==1.0.1
 pytest==8.3.3
+reportlab==4.4.10
+pypdf==6.1.3
