@@ -38,3 +38,10 @@ def student_results():
     student = current_user()
     result = service.student_results(student.login_id)
     return jsonify(result), 200
+
+@bp.get("/student/gpa")
+@roles_required(STUDENT)
+def student_gpa():
+    student = current_user()
+    result = service.student_gpa(student.login_id)
+    return jsonify(result), 200

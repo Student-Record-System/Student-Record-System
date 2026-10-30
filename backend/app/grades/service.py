@@ -95,6 +95,43 @@ def submit_marks(course_code, faculty, data):
 
 APPROVED = "Approved"
 
+def _calculate_grade(internal_marks, end_semester_marks):
+    total_marks = (internal_marks + end_semester_marks) / 2
+
+    if total_marks >= 90:
+        grade, grade_points = "S", 10
+    elif total_marks >= 80:
+        grade, grade_points = "A", 9
+    elif total_marks >= 70:
+        grade, grade_points = "B", 8
+    elif total_marks >= 60:
+        grade, grade_points = "C", 7
+    elif total_marks >= 50:
+        grade, grade_points = "D", 6
+    elif total_marks >= 40:
+        grade, grade_points = "E", 5
+    else:
+        grade, grade_points = "F", 0
+
+    return round(total_marks, 2), grade, grade_points
+
+
+def _result_as_dict(mark, course):
+    total_marks, grade, grade_points = _calculate_grade(
+        mark.internal_marks,
+        mark.end_semester_marks,
+    )
+
+    result = _as_dict(mark)
+    result.update({
+        "total_marks": total_marks,
+        "grade": grade,
+        "grade_points": grade_points,
+        "credits": course.credits,
+        "semester": course.semester,
+    })
+
+    return result
 
 def review_pending_marks():
     return [_as_dict(mark) for mark in repository.get_pending_marks()]
@@ -131,7 +168,62 @@ def approve_marks(course_code, srn):
 
 def student_results(student_srn):
     return [
-        _as_dict(mark)
-        for mark in repository.get_student_approved_marks(student_srn)
+        _result_as_dict(mark, course)
+        for mark, course in repository.get_student_approved_results(
+            student_srn
+        )
     ]
 
+def student_gpa(student_srn):
+    approved_results = repository.get_student_approved_results(
+        student_srn
+    )
+
+    semester_totals = {}
+    overall_weighted_points = 0
+    overall_credits = 0
+
+    for mark, course in approved_results:
+        _, _, grade_points = _calculate_grade(
+            mark.internal_marks,
+            mark.end_semester_marks,
+        )
+
+        credits = course.credits
+
+        if course.semester not in semester_totals:
+            semester_totals[course.semester] = {
+                "weighted_points": 0,
+                "credits": 0,
+            }
+
+        semester_totals[course.semester]["weighted_points"] += (
+            grade_points * credits
+        )
+        semester_totals[course.semester]["credits"] += credits
+
+        overall_weighted_points += grade_points * credits
+        overall_credits += credits
+
+    semester_gpa = []
+
+    for semester in sorted(semester_totals):
+        totals = semester_totals[semester]
+
+        gpa = totals["weighted_points"] / totals["credits"]
+
+        semester_gpa.append({
+            "semester": semester,
+            "gpa": round(gpa, 2),
+        })
+
+    cgpa = (
+        overall_weighted_points / overall_credits
+        if overall_credits > 0
+        else 0.0
+    )
+
+    return {
+        "semester_gpa": semester_gpa,
+        "cgpa": round(cgpa, 2),
+    }

@@ -1,6 +1,6 @@
 from app.extensions import db
 from app.grades.models import PENDING_APPROVAL, StudentMark
-
+from app.course.models import Course
 
 def get_mark(course_code, srn):
     return db.session.execute(
@@ -36,3 +36,14 @@ def get_student_approved_marks(srn):
 def save_mark(mark):
     db.session.commit()
     return mark
+
+def get_student_approved_results(srn):
+    return db.session.execute(
+        db.select(StudentMark, Course)
+        .join(Course, Course.code == StudentMark.course_code)
+        .where(
+            StudentMark.srn == srn,
+            StudentMark.status == "Approved",
+        )
+        .order_by(Course.semester, Course.code)
+    ).all()
