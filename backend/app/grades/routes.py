@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request
 
 from app.auth.access import current_user, roles_required
-from app.common.roles import FACULTY
+from app.common.roles import ADMIN, FACULTY, STUDENT
 from app.grades import service
 
 
@@ -17,3 +17,24 @@ def submit_marks(course_code):
         request.get_json(silent=True),
     )
     return jsonify(result), 201
+
+
+@bp.get("/admin/marks/pending")
+@roles_required(ADMIN)
+def review_pending_marks():
+    return jsonify(service.review_pending_marks()), 200
+
+
+@bp.post("/admin/marks/<string:course_code>/<string:srn>/approve")
+@roles_required(ADMIN)
+def approve_marks(course_code, srn):
+    result = service.approve_marks(course_code, srn)
+    return jsonify(result), 200
+
+
+@bp.get("/student/results")
+@roles_required(STUDENT)
+def student_results():
+    student = current_user()
+    result = service.student_results(student.login_id)
+    return jsonify(result), 200

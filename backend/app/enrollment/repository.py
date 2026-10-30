@@ -1,4 +1,3 @@
-
 from app.course.models import Course
 from app.enrollment.models import (
     COMPLETED,
@@ -75,3 +74,9 @@ def current_semester_enrollments(srn, semester):
     ).all()
 
     return rows
+
+def complete_enrollment(srn, course_code):
+    enrollment = get_enrollment(srn, course_code)
+    if enrollment is not None:
+        enrollment.status = COMPLETED
+    return enrollment
