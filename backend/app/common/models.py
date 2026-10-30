@@ -27,6 +27,12 @@ class AuditEvent(db.Model):
         nullable=True,
         index=True,
     )
+    profile_id = db.Column(
+        db.Integer,
+        db.ForeignKey("student_profiles.id"),
+        nullable=True,
+        index=True,
+    )
     login_id = db.Column(db.String(50), nullable=True)
     details = db.Column(db.JSON, nullable=False, default=dict)
     created_at = db.Column(db.DateTime, nullable=False, default=Clock.now)
