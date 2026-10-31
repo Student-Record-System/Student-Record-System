@@ -45,3 +45,21 @@ def student_gpa():
     student = current_user()
     result = service.student_gpa(student.login_id)
     return jsonify(result), 200
+
+@bp.put("/courses/<string:course_code>/marks/<string:srn>")
+@roles_required(FACULTY)
+def modify_marks(course_code, srn):
+    result = service.modify_marks(
+        course_code,
+        srn,
+        current_user(),
+        request.get_json(silent=True),
+    )
+    return jsonify(result), 200
+
+
+@bp.get("/admin/grades/<string:course_code>/<string:srn>/history")
+@roles_required(ADMIN)
+def grade_history(course_code, srn):
+    result = service.grade_history(course_code, srn)
+    return jsonify(result), 200

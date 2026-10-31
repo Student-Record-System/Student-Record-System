@@ -1,3 +1,4 @@
+
 from app.common.errors import (
     ConflictError,
     ForbiddenError,
@@ -5,11 +6,17 @@ from app.common.errors import (
     ValidationError,
 )
 from app.common.roles import FACULTY
+from app.common.audit import record_event
+from app.common.models import AuditEvent
+from app.extensions import db
 from app.course import repository as course_repository
 from app.enrollment import repository as enrollment_repository
 from app.enrollment.models import ENROLLED
 from app.grades import repository
 from app.grades.models import PENDING_APPROVAL, StudentMark
+
+
+APPROVED = "Approved"
 
 
 def _validate_marks(data):
@@ -21,6 +28,7 @@ def _validate_marks(data):
         raise ValidationError("srn is required.")
 
     values = {}
+
     for field in ("internal_marks", "end_semester_marks"):
         value = data.get(field)
 
@@ -56,6 +64,7 @@ def submit_marks(course_code, faculty, data):
     course_code = course_code.strip().upper()
 
     course = course_repository.get_by_code(course_code)
+
     if course is None:
         raise NotFoundError("Course not found.")
 
@@ -90,10 +99,129 @@ def submit_marks(course_code, faculty, data):
         submitted_by=faculty.id,
     )
 
-    return _as_dict(repository.add_mark(mark))
+    db.session.add(mark)
+    db.session.flush()
+
+    record_event(
+        event_type="GRADE_CREATED",
+        user_id=faculty.id,
+        login_id=faculty.login_id,
+        details={
+            "mark_id": mark.id,
+            "course_code": course_code,
+            "srn": values["srn"],
+            "previous_values": None,
+            "new_values": {
+                "internal_marks": mark.internal_marks,
+                "end_semester_marks": mark.end_semester_marks,
+            },
+        },
+    )
+
+    db.session.commit()
+
+    return _as_dict(mark)
 
 
-APPROVED = "Approved"
+def modify_marks(course_code, srn, faculty, data):
+    if not isinstance(data, dict):
+        raise ValidationError("A JSON object is required.")
+
+    values = _validate_marks({
+        **data,
+        "srn": srn,
+    })
+
+    course_code = course_code.strip().upper()
+
+    course = course_repository.get_by_code(course_code)
+
+    if course is None:
+        raise NotFoundError("Course not found.")
+
+    if faculty.role != FACULTY or course.faculty_id != faculty.id:
+        raise ForbiddenError(
+            "You can modify marks only for a course assigned to you."
+        )
+
+    mark = repository.get_mark(course_code, values["srn"])
+
+    if mark is None:
+        raise NotFoundError("Marks not found.")
+
+    previous_values = {
+        "internal_marks": mark.internal_marks,
+        "end_semester_marks": mark.end_semester_marks,
+    }
+
+    new_values = {
+        "internal_marks": values["internal_marks"],
+        "end_semester_marks": values["end_semester_marks"],
+    }
+
+    mark.internal_marks = new_values["internal_marks"]
+    mark.end_semester_marks = new_values["end_semester_marks"]
+
+    record_event(
+        event_type="GRADE_MODIFIED",
+        user_id=faculty.id,
+        login_id=faculty.login_id,
+        details={
+            "mark_id": mark.id,
+            "course_code": course_code,
+            "srn": values["srn"],
+            "previous_values": previous_values,
+            "new_values": new_values,
+        },
+    )
+
+    db.session.commit()
+
+    return _as_dict(mark)
+
+
+def grade_history(course_code, srn):
+    course_code = course_code.strip().upper()
+    srn = srn.strip()
+
+    mark = repository.get_mark(course_code, srn)
+
+    if mark is None:
+        raise NotFoundError("Marks not found.")
+
+    events = db.session.execute(
+        db.select(AuditEvent)
+        .where(
+            AuditEvent.event_type.in_([
+                "GRADE_CREATED",
+                "GRADE_MODIFIED",
+            ])
+        )
+        .order_by(
+            AuditEvent.created_at.asc(),
+            AuditEvent.id.asc(),
+        )
+    ).scalars().all()
+
+    history = []
+
+    for event in events:
+        details = event.details or {}
+
+        if (
+            details.get("course_code") == course_code
+            and details.get("srn") == srn
+        ):
+            history.append({
+                "faculty_id": event.user_id,
+                "timestamp": event.created_at.isoformat(),
+                "event_type": event.event_type,
+                "previous_values": details.get("previous_values"),
+                "new_values": details.get("new_values"),
+            })
+
+    return history
+
 
 def _calculate_grade(internal_marks, end_semester_marks):
     total_marks = (internal_marks + end_semester_marks) / 2
@@ -123,6 +251,7 @@ def _result_as_dict(mark, course):
     )
 
     result = _as_dict(mark)
+
     result.update({
         "total_marks": total_marks,
         "grade": grade,
@@ -133,8 +262,12 @@ def _result_as_dict(mark, course):
 
     return result
 
+
 def review_pending_marks():
-    return [_as_dict(mark) for mark in repository.get_pending_marks()]
+    return [
+        _as_dict(mark)
+        for mark in repository.get_pending_marks()
+    ]
 
 
 def approve_marks(course_code, srn):
@@ -142,6 +275,7 @@ def approve_marks(course_code, srn):
     srn = srn.strip()
 
     mark = repository.get_mark(course_code, srn)
+
     if mark is None:
         raise NotFoundError("Marks not found.")
 
@@ -151,7 +285,11 @@ def approve_marks(course_code, srn):
             "ERR_MARKS_NOT_PENDING",
         )
 
-    enrollment = enrollment_repository.get_enrollment(srn, course_code)
+    enrollment = enrollment_repository.get_enrollment(
+        srn,
+        course_code,
+    )
+
     if enrollment is None:
         raise NotFoundError("Student enrollment not found.")
 
@@ -162,7 +300,12 @@ def approve_marks(course_code, srn):
         )
 
     mark.status = APPROVED
-    enrollment_repository.complete_enrollment(srn, course_code)
+
+    enrollment_repository.complete_enrollment(
+        srn,
+        course_code,
+    )
+
     return _as_dict(repository.save_mark(mark))
 
 
@@ -173,6 +316,7 @@ def student_results(student_srn):
             student_srn
         )
     ]
+
 
 def student_gpa(student_srn):
     approved_results = repository.get_student_approved_results(
@@ -200,6 +344,7 @@ def student_gpa(student_srn):
         semester_totals[course.semester]["weighted_points"] += (
             grade_points * credits
         )
+
         semester_totals[course.semester]["credits"] += credits
 
         overall_weighted_points += grade_points * credits
