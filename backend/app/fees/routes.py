@@ -26,10 +26,59 @@ def _invoice_json(invoice):
         "description": invoice.description,
         "amount": str(invoice.amount),
         "currency": invoice.currency,
+        "semester": invoice.semester,
         "status": invoice.status,
         "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
         "created_at": invoice.created_at.isoformat(),
     }
+
+
+def _structure_json(structure):
+    return {
+        "id": structure.id,
+        "program": structure.program,
+        "semester": structure.semester,
+        "course_code": structure.course_code,
+        "amount": str(structure.amount),
+        "currency": structure.currency,
+    }
+
+
+@bp.post("/fees/structures")
+@roles_required(ADMIN)
+def create_fee_structure():
+    data = request.get_json(silent=True) or {}
+    structure = service.create_fee_structure(
+        program=data.get("program"),
+        semester=data.get("semester"),
+        amount=data.get("amount"),
+        course_code=data.get("course_code"),
+    )
+    return jsonify({
+        "message": "Fee structure configured successfully.",
+        "fee_structure": _structure_json(structure),
+    }), 201
+
+
+@bp.get("/fees/structures")
+@roles_required(ADMIN)
+def list_fee_structures():
+    return jsonify({
+        "fee_structures": [
+            _structure_json(structure)
+            for structure in service.get_fee_structures()
+        ]
+    }), 200
+
+
+@bp.post("/fees/invoices/generate")
+@roles_required(ADMIN)
+def generate_invoices():
+    invoices = service.generate_invoices()
+    return jsonify({
+        "message": "Fee invoices generated successfully.",
+        "invoices": [_invoice_json(invoice) for invoice in invoices],
+    }), 201
 
 
 def _payment_json(payment):
