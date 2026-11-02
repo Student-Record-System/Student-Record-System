@@ -252,7 +252,7 @@ def initiate_payment(invoice_id, student_id):
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=student_id,
+            profile_id=payment.student_id,
         )
 
         repository.commit()
@@ -283,6 +283,19 @@ def confirm_payment(payment_id, student_id, transaction_id, signature):
     if payment.student_id != student_id:
         raise ForbiddenError("You cannot confirm another student's payment.")
 
+    return _confirm_successful_payment(payment, transaction_id, signature)
+
+
+def confirm_payment_callback(order_id, transaction_id, signature):
+    payment = repository.get_payment_by_order_id(order_id)
+
+    if not payment:
+        raise NotFoundError("Payment not found.")
+
+    return _confirm_successful_payment(payment, transaction_id, signature)
+
+
+def _confirm_successful_payment(payment, transaction_id, signature):
     if payment.status == "SUCCESS":
         if payment.gateway_transaction_id == transaction_id:
             return payment
@@ -328,7 +341,7 @@ def confirm_payment(payment_id, student_id, transaction_id, signature):
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=student_id,
+            profile_id=payment.student_id,
         )
 
         repository.commit()

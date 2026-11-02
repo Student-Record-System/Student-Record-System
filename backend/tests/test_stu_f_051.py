@@ -188,6 +188,72 @@ def test_payment_confirmation_and_receipt_download(client):
     assert receipt_response.data.startswith(b"%PDF")
 
 
+def test_gateway_callback_marks_invoice_paid(client):
+    admin = make_user("admin_callback", ADMIN)
+    student = make_user("student_callback", STUDENT)
+
+    admin_token = token_for(client, admin.login_id)
+    student_token = token_for(client, student.login_id)
+
+    invoice_response = create_invoice(client, admin_token, student.id)
+    invoice_id = invoice_response.get_json()["invoice"]["id"]
+    payment_response = client.post(
+        f"/api/fees/invoices/{invoice_id}/pay",
+        headers=auth(student_token),
+    )
+    payment = payment_response.get_json()["payment"]
+    transaction_id = "CALLBACK_TXN_001"
+    signature = gateways.generate_mock_signature(
+        payment["gateway_order_id"],
+        transaction_id,
+    )
+
+    callback_response = client.post(
+        "/api/fees/payments/callback",
+        json={
+            "order_id": payment["gateway_order_id"],
+            "transaction_id": transaction_id,
+            "signature": signature,
+        },
+    )
+
+    assert callback_response.status_code == 200
+    assert callback_response.get_json()["payment"]["status"] == "SUCCESS"
+    assert db.session.get(FeeInvoice, invoice_id).status == "PAID"
+
+
+def test_gateway_callback_is_idempotent(client):
+    admin = make_user("admin_callback_retry", ADMIN)
+    student = make_user("student_callback_retry", STUDENT)
+
+    admin_token = token_for(client, admin.login_id)
+    student_token = token_for(client, student.login_id)
+    invoice_response = create_invoice(client, admin_token, student.id)
+    invoice_id = invoice_response.get_json()["invoice"]["id"]
+    payment_response = client.post(
+        f"/api/fees/invoices/{invoice_id}/pay",
+        headers=auth(student_token),
+    )
+    payment = payment_response.get_json()["payment"]
+    transaction_id = "CALLBACK_TXN_RETRY"
+    payload = {
+        "order_id": payment["gateway_order_id"],
+        "transaction_id": transaction_id,
+        "signature": gateways.generate_mock_signature(
+            payment["gateway_order_id"],
+            transaction_id,
+        ),
+    }
+
+    first = client.post("/api/fees/payments/callback", json=payload)
+    second = client.post("/api/fees/payments/callback", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.get_json()["payment"]["status"] == "SUCCESS"
+    assert db.session.get(FeeInvoice, invoice_id).status == "PAID"
+
+
 def test_invalid_payment_signature_is_rejected(client):
     admin = make_user("admin_invalid", ADMIN)
     student = make_user("student_invalid", STUDENT)

@@ -173,6 +173,22 @@ def confirm_payment(payment_id):
     }), 200
 
 
+@bp.post("/fees/payments/callback")
+def payment_callback():
+    data = request.get_json(silent=True) or {}
+
+    payment = service.confirm_payment_callback(
+        order_id=data.get("order_id"),
+        transaction_id=data.get("transaction_id"),
+        signature=data.get("signature"),
+    )
+
+    return jsonify({
+        "message": "Payment callback processed successfully.",
+        "payment": _payment_json(payment),
+    }), 200
+
+
 @bp.get("/fees/payments/<int:payment_id>/receipt")
 @roles_required(STUDENT)
 def download_receipt(payment_id):
