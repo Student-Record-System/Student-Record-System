@@ -1,5 +1,8 @@
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta
 from uuid import uuid4
+
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.models import User
 from app.common.audit import record_event
@@ -11,9 +14,11 @@ from app.common.errors import (
     ValidationError,
 )
 from app.common.roles import STUDENT
+from app.common.settings import get_setting
 from app.extensions import db
 from app.fees import gateways, repository
-from app.fees.models import FeeInvoice, Payment
+from app.fees.models import FeeInvoice, FeeStructure, Payment
+from app.enrollment.service import WINDOW_END_KEY
 
 
 def _money(value):
@@ -72,6 +77,134 @@ def create_invoice(student_id, description, amount, due_date=None):
     except Exception:
         repository.rollback()
         raise
+
+
+def _semester(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise ValidationError("semester must be an integer between 1 and 8.")
+    return value
+
+
+def _program(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("program is required.")
+    return value.strip()
+
+
+def create_fee_structure(program, semester, amount, course_code=None):
+    program = _program(program)
+    semester = _semester(semester)
+    if course_code is not None:
+        if not isinstance(course_code, str) or not course_code.strip():
+            raise ValidationError("course_code must be non-empty when provided.")
+        course_code = course_code.strip().upper()
+
+    structure = FeeStructure(
+        program=program,
+        semester=semester,
+        course_code=course_code,
+        amount=_money(amount),
+        currency="INR",
+    )
+    if repository.get_fee_structure(program, semester, course_code) is not None:
+        raise ConflictError("This fee structure already exists.")
+    try:
+        repository.add_fee_structure(structure)
+    except IntegrityError as exc:
+        repository.rollback()
+        raise ConflictError("This fee structure already exists.") from exc
+    return structure
+
+
+def get_fee_structures():
+    return repository.get_fee_structures()
+
+
+def _fees_for_enrollments(profile, enrollments):
+    course_structures = [
+        repository.get_fee_structure(
+            profile.program,
+            enrollment.semester,
+            enrollment.course_code,
+        )
+        for enrollment in enrollments
+    ]
+    if all(structure is not None for structure in course_structures):
+        return course_structures
+
+    program_structure = repository.get_fee_structure(
+        profile.program,
+        enrollments[0].semester,
+    )
+    return [program_structure] if program_structure is not None else []
+
+
+def generate_invoices():
+    window_end = get_setting(WINDOW_END_KEY)
+    if window_end is None:
+        raise ConflictError("The enrollment window is not configured.")
+
+    try:
+        closed_at = datetime.fromisoformat(window_end)
+    except ValueError as exc:
+        raise ConflictError("The enrollment window configuration is invalid.") from exc
+
+    now = Clock.now()
+    if now <= closed_at:
+        raise ConflictError("The enrollment window is still open.")
+    if now > closed_at + timedelta(hours=24):
+        raise ConflictError("The invoice-generation window has expired.")
+
+    grouped = {}
+    for user, profile, enrollment in repository.enrolled_student_records():
+        grouped.setdefault((user, profile, enrollment.semester), []).append(enrollment)
+
+    pending = []
+    for (user, profile, semester), enrollments in grouped.items():
+        generation_key = f"{window_end}:{user.id}:{semester}"
+        if repository.get_generated_invoice(generation_key) is not None:
+            continue
+
+        structures = _fees_for_enrollments(profile, enrollments)
+        if not structures:
+            raise ValidationError(
+                f"No fee structure is configured for {profile.program}, "
+                f"semester {semester}."
+            )
+
+        amount = sum((structure.amount for structure in structures), Decimal("0.00"))
+        invoice = FeeInvoice(
+            invoice_number=f"INV-{uuid4().hex[:12].upper()}",
+            student_id=user.id,
+            description=f"Semester {semester} fee invoice",
+            amount=amount,
+            currency="INR",
+            semester=semester,
+            generation_key=generation_key,
+            status="UNPAID",
+        )
+        pending.append((invoice, profile))
+
+    try:
+        for invoice, profile in pending:
+            db.session.add(invoice)
+            record_event(
+                event_type="FEE_INVOICE_CREATED",
+                details={
+                    "invoice_number": invoice.invoice_number,
+                    "amount": str(invoice.amount),
+                    "currency": invoice.currency,
+                    "semester": invoice.semester,
+                    "generated": True,
+                },
+                profile_id=profile.id,
+            )
+        repository.commit()
+    except Exception:
+        repository.rollback()
+        raise
+
+    return [invoice for invoice, _ in pending]
 
 
 def get_student_invoices(student_id):
