@@ -20,6 +20,8 @@ class FeeInvoice(db.Model):
     description = db.Column(db.String(255), nullable=False)
     amount = db.Column(db.Numeric(10, 2), nullable=False)
     currency = db.Column(db.String(3), nullable=False, default="INR")
+    semester = db.Column(db.Integer, nullable=True, index=True)
+    generation_key = db.Column(db.String(180), unique=True, nullable=True)
 
     status = db.Column(db.String(20), nullable=False, default="UNPAID")
     due_date = db.Column(db.Date, nullable=True)
@@ -46,6 +48,34 @@ class FeeInvoice(db.Model):
             "status IN ('UNPAID', 'PAID', 'CANCELLED')",
             name="check_fee_invoice_status",
         ),
+    )
+
+
+class FeeStructure(db.Model):
+    __tablename__ = "fee_structures"
+
+    id = db.Column(db.Integer, primary_key=True)
+    program = db.Column(db.String(120), nullable=False, index=True)
+    semester = db.Column(db.Integer, nullable=False, index=True)
+    course_code = db.Column(db.String(30), nullable=True, index=True)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    currency = db.Column(db.String(3), nullable=False, default="INR")
+    created_at = db.Column(db.DateTime, nullable=False, default=Clock.now)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=Clock.now,
+        onupdate=Clock.now,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "program",
+            "semester",
+            "course_code",
+            name="uq_fee_structure_program_semester_course",
+        ),
+        db.CheckConstraint("amount > 0", name="check_fee_structure_amount_positive"),
     )
 
 
