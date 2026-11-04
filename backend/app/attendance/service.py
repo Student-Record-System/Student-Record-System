@@ -11,6 +11,7 @@ from app.common.errors import (
     ValidationError,
 )
 from app.course import repository as course_repository
+from app.profile import repository as profile_repository
 
 def record_attendance(course_code, faculty, data):
     if not isinstance(data, dict):
@@ -123,5 +124,70 @@ def record_attendance(course_code, faculty, data):
                 "status": item.status,
             }
             for item in saved_records
+        ],
+    }
+
+def _attendance_percentage(present_sessions, total_sessions):
+    if total_sessions == 0:
+        return None
+
+    return round((present_sessions / total_sessions) * 100, 2)
+
+
+def _summary_record(srn, present_sessions, total_sessions):
+    absent_sessions = total_sessions - present_sessions
+
+    return {
+        "srn": srn,
+        "present_sessions": present_sessions,
+        "absent_sessions": absent_sessions,
+        "total_sessions": total_sessions,
+        "attendance_percentage": _attendance_percentage(
+            present_sessions, total_sessions
+        ),
+    }
+
+
+def course_attendance_summary(course_code, faculty):
+    course = course_repository.get_by_code(course_code.upper())
+
+    if course is None:
+        raise NotFoundError("Course not found.")
+
+    if course.faculty_id != faculty.id:
+        raise ForbiddenError("You are not assigned to teach this course.")
+
+    rows = repository.attendance_summary_for_course(course.code)
+
+    return {
+        "course_code": course.code,
+        "students": [
+            _summary_record(srn, present, total)
+            for srn, present, total in rows
+        ],
+    }
+
+
+def student_attendance_summary(srn):
+    profile = profile_repository.get_by_srn(srn)
+
+    if profile is None:
+        raise NotFoundError("Student profile not found.")
+
+    rows = repository.attendance_summary_for_student(srn)
+
+    return {
+        "srn": srn,
+        "courses": [
+            {
+                "course_code": course_code,
+                "present_sessions": present,
+                "absent_sessions": total - present,
+                "total_sessions": total,
+                "attendance_percentage": _attendance_percentage(
+                    present, total
+                ),
+            }
+            for course_code, present, total in rows
         ],
     }
