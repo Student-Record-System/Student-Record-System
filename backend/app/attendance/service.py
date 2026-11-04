@@ -10,8 +10,75 @@ from app.common.errors import (
     NotFoundError,
     ValidationError,
 )
+from app.common.notifications import get_notification_client
+from app.common.settings import get_setting
 from app.course import repository as course_repository
 from app.profile import repository as profile_repository
+
+ATTENDANCE_THRESHOLD_KEY = "attendance_minimum_percentage"
+DEFAULT_ATTENDANCE_THRESHOLD = 75.0
+ATTENDANCE_ALERT_KIND = "ATTENDANCE_BELOW_THRESHOLD"
+
+
+def _attendance_threshold():
+    configured = get_setting(
+        ATTENDANCE_THRESHOLD_KEY,
+        str(DEFAULT_ATTENDANCE_THRESHOLD),
+    )
+    try:
+        threshold = float(configured)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            "The configured attendance threshold must be a number between 0 and 100."
+        ) from exc
+    if not 0 <= threshold <= 100:
+        raise ValidationError(
+            "The configured attendance threshold must be a number between 0 and 100."
+        )
+    return threshold
+
+
+def _notify_threshold_crossings(course, records, roster, threshold):
+    profiles = {profile.srn: profile for _, profile in roster}
+    notifications = get_notification_client()
+
+    for record in records:
+        present, total = repository.attendance_counts_for_student_course(
+            record.srn,
+            course.code,
+        )
+        previous_present = present - (record.status == "Present")
+        previous_total = total - 1
+        previous_percentage = _attendance_percentage(
+            previous_present,
+            previous_total,
+        )
+        current_percentage = _attendance_percentage(present, total)
+
+        crossed_threshold = (
+            current_percentage is not None
+            and current_percentage < threshold
+            and (
+                previous_percentage is None
+                or previous_percentage >= threshold
+            )
+        )
+        if not crossed_threshold:
+            continue
+
+        profile = profiles[record.srn]
+        notifications.send(
+            recipient=profile.email,
+            subject=f"Attendance below {threshold:g}% minimum",
+            body=(
+                f"Your attendance for {course.code} is "
+                f"{current_percentage:.2f}%, below the configured "
+                f"minimum of {threshold:g}%. "
+                "Please take corrective action."
+            ),
+            kind=ATTENDANCE_ALERT_KIND,
+        )
+
 
 def record_attendance(course_code, faculty, data):
     if not isinstance(data, dict):
@@ -107,12 +174,15 @@ def record_attendance(course_code, faculty, data):
         )
 
     try:
+        threshold = _attendance_threshold()
         saved_records = repository.add_all(attendance_records)
     except IntegrityError:
         raise ConflictError(
             "Attendance already exists for one or more students in this session.",
             "ERR_DUPLICATE_ATTENDANCE",
         )
+
+    _notify_threshold_crossings(course, saved_records, roster, threshold)
 
     return {
         "course_code": course.code,
