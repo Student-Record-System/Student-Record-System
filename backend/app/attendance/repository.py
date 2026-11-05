@@ -89,3 +89,21 @@ def attendance_summary_for_student(srn):
         .group_by(Enrollment.course_code)
         .order_by(Enrollment.course_code)
     ).all()
+
+
+def attendance_counts_for_student_course(srn, course_code):
+    present_sessions, total_sessions = db.session.execute(
+        db.select(
+            func.coalesce(
+                func.sum(
+                    case((Attendance.status == "Present", 1), else_=0)
+                ),
+                0,
+            ),
+            func.count(Attendance.id),
+        ).where(
+            Attendance.srn == srn,
+            Attendance.course_code == course_code,
+        )
+    ).one()
+    return present_sessions, total_sessions
