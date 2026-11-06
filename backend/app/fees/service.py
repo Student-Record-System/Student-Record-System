@@ -14,11 +14,14 @@ from app.common.errors import (
     ValidationError,
 )
 from app.common.roles import STUDENT
-from app.common.settings import get_setting
 from app.extensions import db
 from app.fees import gateways, repository
 from app.fees.models import FeeInvoice, FeeStructure, Payment
 from app.enrollment.service import WINDOW_END_KEY
+from datetime import date, datetime, timedelta
+from app.common.notifications import get_notification_client
+from app.common.settings import get_setting, set_setting
+from app.fees.models import FeeReminderLog
 
 
 def _money(value):
@@ -362,3 +365,108 @@ def get_payment(payment_id, student_id):
         raise ForbiddenError("You cannot access another student's payment.")
 
     return payment
+
+FEE_REMINDER_DAYS_KEY = "fee_reminder_days_before_due"
+DEFAULT_FEE_REMINDER_DAYS = 3
+
+
+def get_fee_reminder_settings():
+    value = get_setting(
+        FEE_REMINDER_DAYS_KEY,
+        str(DEFAULT_FEE_REMINDER_DAYS),
+    )
+
+    return {
+        "days_before_due": int(value),
+    }
+
+
+def configure_fee_reminders(days_before_due):
+    if (
+        isinstance(days_before_due, bool)
+        or not isinstance(days_before_due, int)
+        or not 0 <= days_before_due <= 30
+    ):
+        raise ValidationError(
+            "days_before_due must be an integer between 0 and 30."
+        )
+
+    set_setting(FEE_REMINDER_DAYS_KEY, str(days_before_due))
+
+    return {
+        "days_before_due": days_before_due,
+    }
+
+
+def send_scheduled_fee_reminders():
+    settings = get_fee_reminder_settings()
+    days_before_due = settings["days_before_due"]
+
+    target_date = Clock.now().date() + timedelta(
+        days=days_before_due
+    )
+
+    invoices = repository.get_invoices_due_on(target_date)
+
+    notification_client = get_notification_client()
+    sent_count = 0
+    skipped_count = 0
+
+    for invoice in invoices:
+        # Recheck the status before dispatching.
+        if invoice.status != "UNPAID":
+            skipped_count += 1
+            continue
+
+        existing = repository.get_fee_reminder(
+            invoice.id,
+            invoice.due_date,
+            days_before_due,
+        )
+
+        if existing is not None:
+            skipped_count += 1
+            continue
+
+        student = invoice.student
+
+        subject = "Fee Payment Reminder"
+
+        body = (
+            f"Dear {student.login_id}, "
+            f"your fee payment of {invoice.currency} "
+            f"{invoice.amount} for invoice "
+            f"{invoice.invoice_number} is due on "
+            f"{invoice.due_date.isoformat()}. "
+            f"Please complete your payment."
+        )
+
+        try:
+            notification_client.send(
+                recipient=student.login_id,
+                subject=subject,
+                body=body,
+                kind="FEE_REMINDER",
+            )
+
+            repository.create_fee_reminder(
+                FeeReminderLog(
+                    invoice_id=invoice.id,
+                    due_date=invoice.due_date,
+                    days_before_due=days_before_due,
+                )
+            )
+
+            repository.commit()
+            sent_count += 1
+
+        except Exception:
+            repository.rollback()
+            raise
+
+    return {
+        "target_date": target_date.isoformat(),
+        "days_before_due": days_before_due,
+        "sent_count": sent_count,
+        "skipped_count": skipped_count,
+    }

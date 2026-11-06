@@ -121,3 +121,37 @@ class Payment(db.Model):
             name="check_payment_status",
         ),
     )
+
+class FeeReminderLog(db.Model):
+    __tablename__ = "fee_reminder_logs"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    invoice_id = db.Column(
+        db.Integer,
+        db.ForeignKey("fee_invoices.id"),
+        nullable=False,
+        index=True,
+    )
+
+    due_date = db.Column(db.Date, nullable=False)
+    days_before_due = db.Column(db.Integer, nullable=False)
+
+    sent_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=Clock.now,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "invoice_id",
+            "due_date",
+            "days_before_due",
+            name="uq_fee_reminder_invoice_schedule",
+        ),
+        db.CheckConstraint(
+            "days_before_due >= 0",
+            name="check_fee_reminder_days_nonnegative",
+        ),
+    )

@@ -1,8 +1,14 @@
+
 from app.auth.models import User
 from app.common.roles import STUDENT
 from app.extensions import db
 from app.enrollment.models import ENROLLED, Enrollment
-from app.fees.models import FeeInvoice, FeeStructure, Payment
+from app.fees.models import (
+    FeeInvoice,
+    FeeStructure,
+    Payment,
+    FeeReminderLog,
+)
 from app.profile.models import StudentProfile
 
 
@@ -69,7 +75,9 @@ def enrolled_student_records():
 
 
 def get_generated_invoice(generation_key):
-    return FeeInvoice.query.filter_by(generation_key=generation_key).first()
+    return FeeInvoice.query.filter_by(
+        generation_key=generation_key
+    ).first()
 
 
 def create_payment(payment):
@@ -109,3 +117,31 @@ def commit():
 
 def rollback():
     db.session.rollback()
+
+
+# Fee reminder functions
+
+def get_invoices_due_on(target_date):
+    return (
+        FeeInvoice.query
+        .filter(
+            FeeInvoice.status == "UNPAID",
+            FeeInvoice.due_date == target_date,
+        )
+        .order_by(FeeInvoice.id)
+        .all()
+    )
+
+
+def get_fee_reminder(invoice_id, due_date, days_before_due):
+    return FeeReminderLog.query.filter_by(
+        invoice_id=invoice_id,
+        due_date=due_date,
+        days_before_due=days_before_due,
+    ).first()
+
+
+def create_fee_reminder(reminder):
+    db.session.add(reminder)
+    db.session.flush()
+    return reminder
