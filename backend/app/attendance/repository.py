@@ -107,3 +107,26 @@ def attendance_counts_for_student_course(srn, course_code):
         )
     ).one()
     return present_sessions, total_sessions
+def attendance_records_for_student(srn):
+    return db.session.execute(
+        db.select(
+            Enrollment.course_code,
+            Attendance.attendance_date,
+            Attendance.session,
+            Attendance.status,
+        )
+        .outerjoin(
+            Attendance,
+            (Attendance.srn == Enrollment.srn)
+            & (Attendance.course_code == Enrollment.course_code),
+        )
+        .where(
+            Enrollment.srn == srn,
+            Enrollment.status.in_((ENROLLED, COMPLETED)),
+        )
+        .order_by(
+            Enrollment.course_code,
+            Attendance.attendance_date,
+            Attendance.session,
+        )
+    ).all()

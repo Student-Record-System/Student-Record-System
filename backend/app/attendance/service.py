@@ -261,3 +261,36 @@ def student_attendance_summary(srn):
             for course_code, present, total in rows
         ],
     }
+def student_attendance_records(srn):
+    profile = profile_repository.get_by_srn(srn)
+
+    if profile is None:
+        raise NotFoundError("Student profile not found.")
+
+    rows = repository.attendance_records_for_student(srn)
+
+    courses = {}
+
+    for course_code, attendance_date, session, status in rows:
+        if course_code not in courses:
+            courses[course_code] = []
+
+        if attendance_date is not None:
+            courses[course_code].append(
+                {
+                    "attendance_date": attendance_date.isoformat(),
+                    "session": session,
+                    "status": status,
+                }
+            )
+
+    return {
+        "srn": srn,
+        "courses": [
+            {
+                "course_code": course_code,
+                "records": records,
+            }
+            for course_code, records in courses.items()
+        ],
+    }

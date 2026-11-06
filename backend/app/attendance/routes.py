@@ -1,3 +1,4 @@
+
 from flask import Blueprint, jsonify, request
 
 from app.attendance import service
@@ -18,6 +19,7 @@ def record_course_attendance(course_code):
     )
     return jsonify(result), 201
 
+
 @bp.get("/courses/<string:course_code>/attendance/summary")
 @roles_required(FACULTY)
 def get_course_attendance_summary(course_code):
@@ -32,6 +34,15 @@ def get_course_attendance_summary(course_code):
 @roles_required(STUDENT)
 def get_my_attendance_summary():
     result = service.student_attendance_summary(
+        current_user().login_id
+    )
+    return jsonify(result), 200
+
+
+@bp.get("/students/me/attendance/records")
+@roles_required(STUDENT)
+def get_my_attendance_records():
+    result = service.student_attendance_records(
         current_user().login_id
     )
     return jsonify(result), 200
