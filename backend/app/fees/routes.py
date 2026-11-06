@@ -208,3 +208,28 @@ def download_receipt(payment_id):
         as_attachment=True,
         download_name=f"{payment.receipt_number}.pdf",
     )
+
+@bp.get("/fees/reminder-settings")
+@roles_required(ADMIN)
+def get_reminder_settings():
+    return jsonify({
+        "reminder_settings": service.get_fee_reminder_settings()
+    }), 200
+
+
+@bp.put("/fees/reminder-settings")
+@roles_required(ADMIN)
+def update_reminder_settings():
+    data = request.get_json(silent=True) or {}
+
+    if "days_before_due" not in data:
+        raise ValidationError("days_before_due is required.")
+
+    settings = service.configure_fee_reminders(
+        data["days_before_due"]
+    )
+
+    return jsonify({
+        "message": "Fee reminder settings updated successfully.",
+        "reminder_settings": settings,
+    }), 200
