@@ -1,4 +1,3 @@
-
 import importlib
 import importlib.util
 
@@ -66,6 +65,14 @@ def create_app(config_object=Config):
         from app.fees.service import send_scheduled_fee_reminders
 
         result = send_scheduled_fee_reminders()
+        print(result)
+
+    @app.cli.command("archive-audit-events")
+    def archive_audit_events_command():
+        """Archive audit events older than five years."""
+        from app.common.audit import archive_old_events
+
+        result = archive_old_events()
         print(result)
 
     return app
