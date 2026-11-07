@@ -1,5 +1,5 @@
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -13,16 +13,22 @@ from app.common.errors import (
     NotFoundError,
     ValidationError,
 )
-from app.common.roles import STUDENT
+from app.common.notifications import get_notification_client
+from app.common.roles import ADMIN, STUDENT
+from app.common.settings import get_setting, set_setting
 from app.extensions import db
 from app.fees import gateways, repository
-from app.fees.models import FeeInvoice, FeeStructure, Payment
+from app.fees.models import (
+    FeeEnrollmentOverride,
+    FeeInvoice,
+    FeeReminderLog,
+    FeeStructure,
+    Payment,
+)
 from app.enrollment.service import WINDOW_END_KEY
-from datetime import date, datetime, timedelta
-from app.common.notifications import get_notification_client
-from app.common.settings import get_setting, set_setting
-from app.fees.models import FeeReminderLog
 
+
+# ---- common validation ----
 
 def _money(value):
     try:
@@ -44,6 +50,8 @@ def _student_user(student_id):
 
     return user
 
+
+# ---- invoices ----
 
 def create_invoice(student_id, description, amount, due_date=None):
     student = _student_user(student_id)
@@ -82,24 +90,38 @@ def create_invoice(student_id, description, amount, due_date=None):
         raise
 
 
+# ---- fee structures ----
+
 def _semester(value):
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
-        raise ValidationError("semester must be an integer between 1 and 8.")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 8
+    ):
+        raise ValidationError(
+            "semester must be an integer between 1 and 8."
+        )
+
     return value
 
 
 def _program(value):
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("program is required.")
+
     return value.strip()
 
 
 def create_fee_structure(program, semester, amount, course_code=None):
     program = _program(program)
     semester = _semester(semester)
+
     if course_code is not None:
         if not isinstance(course_code, str) or not course_code.strip():
-            raise ValidationError("course_code must be non-empty when provided.")
+            raise ValidationError(
+                "course_code must be non-empty when provided."
+            )
+
         course_code = course_code.strip().upper()
 
     structure = FeeStructure(
@@ -109,13 +131,20 @@ def create_fee_structure(program, semester, amount, course_code=None):
         amount=_money(amount),
         currency="INR",
     )
-    if repository.get_fee_structure(program, semester, course_code) is not None:
+
+    if repository.get_fee_structure(
+        program, semester, course_code
+    ) is not None:
         raise ConflictError("This fee structure already exists.")
+
     try:
         repository.add_fee_structure(structure)
     except IntegrityError as exc:
         repository.rollback()
-        raise ConflictError("This fee structure already exists.") from exc
+        raise ConflictError(
+            "This fee structure already exists."
+        ) from exc
+
     return structure
 
 
@@ -132,50 +161,84 @@ def _fees_for_enrollments(profile, enrollments):
         )
         for enrollment in enrollments
     ]
-    if all(structure is not None for structure in course_structures):
+
+    if all(
+        structure is not None
+        for structure in course_structures
+    ):
         return course_structures
 
     program_structure = repository.get_fee_structure(
         profile.program,
         enrollments[0].semester,
     )
-    return [program_structure] if program_structure is not None else []
 
+    return (
+        [program_structure]
+        if program_structure is not None
+        else []
+    )
+
+
+# ---- invoice generation ----
 
 def generate_invoices():
     window_end = get_setting(WINDOW_END_KEY)
+
     if window_end is None:
-        raise ConflictError("The enrollment window is not configured.")
+        raise ConflictError(
+            "The enrollment window is not configured."
+        )
 
     try:
         closed_at = datetime.fromisoformat(window_end)
     except ValueError as exc:
-        raise ConflictError("The enrollment window configuration is invalid.") from exc
+        raise ConflictError(
+            "The enrollment window configuration is invalid."
+        ) from exc
 
     now = Clock.now()
+
     if now <= closed_at:
-        raise ConflictError("The enrollment window is still open.")
+        raise ConflictError(
+            "The enrollment window is still open."
+        )
+
     if now > closed_at + timedelta(hours=24):
-        raise ConflictError("The invoice-generation window has expired.")
+        raise ConflictError(
+            "The invoice-generation window has expired."
+        )
 
     grouped = {}
+
     for user, profile, enrollment in repository.enrolled_student_records():
-        grouped.setdefault((user, profile, enrollment.semester), []).append(enrollment)
+        grouped.setdefault(
+            (user, profile, enrollment.semester), []
+        ).append(enrollment)
 
     pending = []
+
     for (user, profile, semester), enrollments in grouped.items():
         generation_key = f"{window_end}:{user.id}:{semester}"
+
         if repository.get_generated_invoice(generation_key) is not None:
             continue
 
-        structures = _fees_for_enrollments(profile, enrollments)
+        structures = _fees_for_enrollments(
+            profile, enrollments
+        )
+
         if not structures:
             raise ValidationError(
                 f"No fee structure is configured for {profile.program}, "
                 f"semester {semester}."
             )
 
-        amount = sum((structure.amount for structure in structures), Decimal("0.00"))
+        amount = sum(
+            (structure.amount for structure in structures),
+            Decimal("0.00"),
+        )
+
         invoice = FeeInvoice(
             invoice_number=f"INV-{uuid4().hex[:12].upper()}",
             student_id=user.id,
@@ -186,11 +249,13 @@ def generate_invoices():
             generation_key=generation_key,
             status="UNPAID",
         )
+
         pending.append((invoice, profile))
 
     try:
         for invoice, profile in pending:
             db.session.add(invoice)
+
             record_event(
                 event_type="FEE_INVOICE_CREATED",
                 details={
@@ -202,7 +267,9 @@ def generate_invoices():
                 },
                 profile_id=profile.id,
             )
+
         repository.commit()
+
     except Exception:
         repository.rollback()
         raise
@@ -214,6 +281,8 @@ def get_student_invoices(student_id):
     return repository.get_student_invoices(student_id)
 
 
+# ---- payments ----
+
 def initiate_payment(invoice_id, student_id):
     invoice = repository.get_invoice_by_id(invoice_id)
 
@@ -221,18 +290,31 @@ def initiate_payment(invoice_id, student_id):
         raise NotFoundError("Invoice not found.")
 
     if invoice.student_id != student_id:
-        raise ForbiddenError("You cannot pay another student's invoice.")
+        raise ForbiddenError(
+            "You cannot pay another student's invoice."
+        )
 
     if invoice.status == "PAID":
-        raise ConflictError("This invoice has already been paid.")
+        raise ConflictError(
+            "This invoice has already been paid."
+        )
 
     if invoice.status != "UNPAID":
-        raise ConflictError("This invoice cannot be paid.")
+        raise ConflictError(
+            "This invoice cannot be paid."
+        )
 
-    existing_payments = repository.get_payments_for_invoice(invoice.id)
+    existing_payments = repository.get_payments_for_invoice(
+        invoice.id
+    )
 
-    if any(payment.status == "PENDING" for payment in existing_payments):
-        raise ConflictError("A payment is already pending for this invoice.")
+    if any(
+        payment.status == "PENDING"
+        for payment in existing_payments
+    ):
+        raise ConflictError(
+            "A payment is already pending for this invoice."
+        )
 
     payment = Payment(
         invoice_id=invoice.id,
@@ -277,33 +359,58 @@ def initiate_payment(invoice_id, student_id):
         raise
 
 
-def confirm_payment(payment_id, student_id, transaction_id, signature):
+def confirm_payment(
+    payment_id,
+    student_id,
+    transaction_id,
+    signature,
+):
     payment = repository.get_payment_by_id(payment_id)
 
     if not payment:
         raise NotFoundError("Payment not found.")
 
     if payment.student_id != student_id:
-        raise ForbiddenError("You cannot confirm another student's payment.")
+        raise ForbiddenError(
+            "You cannot confirm another student's payment."
+        )
 
-    return _confirm_successful_payment(payment, transaction_id, signature)
+    return _confirm_successful_payment(
+        payment,
+        transaction_id,
+        signature,
+    )
 
 
-def confirm_payment_callback(order_id, transaction_id, signature):
+def confirm_payment_callback(
+    order_id,
+    transaction_id,
+    signature,
+):
     payment = repository.get_payment_by_order_id(order_id)
 
     if not payment:
         raise NotFoundError("Payment not found.")
 
-    return _confirm_successful_payment(payment, transaction_id, signature)
+    return _confirm_successful_payment(
+        payment,
+        transaction_id,
+        signature,
+    )
 
 
-def _confirm_successful_payment(payment, transaction_id, signature):
+def _confirm_successful_payment(
+    payment,
+    transaction_id,
+    signature,
+):
     if payment.status == "SUCCESS":
         if payment.gateway_transaction_id == transaction_id:
             return payment
 
-        raise ConflictError("This payment has already been completed.")
+        raise ConflictError(
+            "This payment has already been completed."
+        )
 
     if payment.status != "PENDING":
         raise ConflictError("This payment is not pending.")
@@ -312,7 +419,9 @@ def _confirm_successful_payment(payment, transaction_id, signature):
         raise ValidationError("A transaction ID is required.")
 
     if repository.get_payment_by_transaction_id(transaction_id):
-        raise ConflictError("This transaction ID has already been used.")
+        raise ConflictError(
+            "This transaction ID has already been used."
+        )
 
     if not gateways.verify_payment(
         payment.gateway_order_id,
@@ -324,13 +433,17 @@ def _confirm_successful_payment(payment, transaction_id, signature):
     invoice = repository.get_invoice_by_id(payment.invoice_id)
 
     if not invoice or invoice.status != "UNPAID":
-        raise ConflictError("The invoice is no longer payable.")
+        raise ConflictError(
+            "The invoice is no longer payable."
+        )
 
     try:
         payment.status = "SUCCESS"
         payment.gateway_transaction_id = transaction_id
         payment.paid_at = Clock.now()
-        payment.receipt_number = f"REC-{uuid4().hex[:12].upper()}"
+        payment.receipt_number = (
+            f"REC-{uuid4().hex[:12].upper()}"
+        )
 
         invoice.status = "PAID"
 
@@ -362,9 +475,14 @@ def get_payment(payment_id, student_id):
         raise NotFoundError("Payment not found.")
 
     if payment.student_id != student_id:
-        raise ForbiddenError("You cannot access another student's payment.")
+        raise ForbiddenError(
+            "You cannot access another student's payment."
+        )
 
     return payment
+
+
+# ---- fee reminder settings ----
 
 FEE_REMINDER_DAYS_KEY = "fee_reminder_days_before_due"
 DEFAULT_FEE_REMINDER_DAYS = 3
@@ -391,7 +509,10 @@ def configure_fee_reminders(days_before_due):
             "days_before_due must be an integer between 0 and 30."
         )
 
-    set_setting(FEE_REMINDER_DAYS_KEY, str(days_before_due))
+    set_setting(
+        FEE_REMINDER_DAYS_KEY,
+        str(days_before_due),
+    )
 
     return {
         "days_before_due": days_before_due,
@@ -413,7 +534,6 @@ def send_scheduled_fee_reminders():
     skipped_count = 0
 
     for invoice in invoices:
-        # Recheck the status before dispatching.
         if invoice.status != "UNPAID":
             skipped_count += 1
             continue
@@ -470,3 +590,95 @@ def send_scheduled_fee_reminders():
         "sent_count": sent_count,
         "skipped_count": skipped_count,
     }
+
+
+# ---- fee enrollment overrides ----
+
+def create_fee_enrollment_override(
+    student_srn,
+    semester,
+    reason,
+    admin_user_id,
+):
+    if not isinstance(student_srn, str) or not student_srn.strip():
+        raise ValidationError("student_srn is required.")
+
+    semester = _semester(semester)
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValidationError("An override reason is required.")
+
+    reason = reason.strip()
+
+    if len(reason) > 500:
+        raise ValidationError(
+            "The override reason cannot exceed 500 characters."
+        )
+
+    student = User.query.filter_by(
+        login_id=student_srn.strip()
+    ).first()
+
+    if (
+        student is None
+        or student.role != STUDENT
+        or not student.is_active
+    ):
+        raise NotFoundError("Student not found.")
+
+    administrator = db.session.get(User, admin_user_id)
+
+    # Use the application's ADMIN role constant.
+    if administrator is None or administrator.role != ADMIN:
+        raise ForbiddenError(
+            "Only an administrator can create an enrollment override."
+        )
+
+    existing = repository.get_fee_enrollment_override(
+        student.id,
+        semester,
+    )
+
+    if existing is not None:
+        raise ConflictError(
+            "An override already exists for this student and semester."
+        )
+
+    override = FeeEnrollmentOverride(
+        student_id=student.id,
+        semester=semester,
+        admin_user_id=admin_user_id,
+        reason=reason,
+    )
+
+    try:
+        repository.create_fee_enrollment_override(override)
+
+        record_event(
+            event_type="FEE_ENROLLMENT_OVERRIDE_CREATED",
+            user_id=admin_user_id,
+            profile_id=student.id,
+            details={
+                "student_srn": student.login_id,
+                "semester": semester,
+                "reason": reason,
+                "admin_user_id": admin_user_id,
+            },
+        )
+
+        repository.commit()
+        return override
+
+    except IntegrityError as exc:
+        repository.rollback()
+        raise ConflictError(
+            "An override already exists for this student and semester."
+        ) from exc
+
+    except Exception:
+        repository.rollback()
+        raise
+
+
+def get_fee_enrollment_overrides(student_id=None):
+    return repository.get_fee_enrollment_overrides(student_id)
