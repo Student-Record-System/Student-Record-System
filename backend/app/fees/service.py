@@ -1,3 +1,4 @@
+
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -16,12 +17,10 @@ from app.common.errors import (
 from app.common.roles import STUDENT
 from app.extensions import db
 from app.fees import gateways, repository
-from app.fees.models import FeeInvoice, FeeStructure, Payment
+from app.fees.models import FeeInvoice, FeeStructure, Payment, FeeReminderLog
 from app.enrollment.service import WINDOW_END_KEY
-from datetime import date, datetime, timedelta
 from app.common.notifications import get_notification_client
 from app.common.settings import get_setting, set_setting
-from app.fees.models import FeeReminderLog
 
 
 def _money(value):
@@ -45,7 +44,7 @@ def _student_user(student_id):
     return user
 
 
-def create_invoice(student_id, description, amount, due_date=None):
+def create_invoice(student_id, description, amount, due_date=None, editor=None):
     student = _student_user(student_id)
 
     if not isinstance(description, str) or not description.strip():
@@ -66,12 +65,19 @@ def create_invoice(student_id, description, amount, due_date=None):
 
         record_event(
             event_type="FEE_INVOICE_CREATED",
+            user_id=editor.id if editor else None,
+            login_id=editor.login_id if editor else "SYSTEM",
             details={
                 "invoice_number": invoice.invoice_number,
+                "student_id": student.id,
                 "amount": str(invoice.amount),
                 "currency": invoice.currency,
             },
-            profile_id=student.id,
+            previous_values=None,
+            new_values={
+                "status": "UNPAID",
+                "amount": str(invoice.amount),
+            },
         )
 
         repository.commit()
@@ -97,6 +103,7 @@ def _program(value):
 def create_fee_structure(program, semester, amount, course_code=None):
     program = _program(program)
     semester = _semester(semester)
+
     if course_code is not None:
         if not isinstance(course_code, str) or not course_code.strip():
             raise ValidationError("course_code must be non-empty when provided.")
@@ -109,13 +116,16 @@ def create_fee_structure(program, semester, amount, course_code=None):
         amount=_money(amount),
         currency="INR",
     )
+
     if repository.get_fee_structure(program, semester, course_code) is not None:
         raise ConflictError("This fee structure already exists.")
+
     try:
         repository.add_fee_structure(structure)
     except IntegrityError as exc:
         repository.rollback()
         raise ConflictError("This fee structure already exists.") from exc
+
     return structure
 
 
@@ -132,6 +142,7 @@ def _fees_for_enrollments(profile, enrollments):
         )
         for enrollment in enrollments
     ]
+
     if all(structure is not None for structure in course_structures):
         return course_structures
 
@@ -139,11 +150,13 @@ def _fees_for_enrollments(profile, enrollments):
         profile.program,
         enrollments[0].semester,
     )
+
     return [program_structure] if program_structure is not None else []
 
 
-def generate_invoices():
+def generate_invoices(editor=None):
     window_end = get_setting(WINDOW_END_KEY)
+
     if window_end is None:
         raise ConflictError("The enrollment window is not configured.")
 
@@ -153,29 +166,39 @@ def generate_invoices():
         raise ConflictError("The enrollment window configuration is invalid.") from exc
 
     now = Clock.now()
+
     if now <= closed_at:
         raise ConflictError("The enrollment window is still open.")
+
     if now > closed_at + timedelta(hours=24):
         raise ConflictError("The invoice-generation window has expired.")
 
     grouped = {}
+
     for user, profile, enrollment in repository.enrolled_student_records():
         grouped.setdefault((user, profile, enrollment.semester), []).append(enrollment)
 
     pending = []
+
     for (user, profile, semester), enrollments in grouped.items():
         generation_key = f"{window_end}:{user.id}:{semester}"
+
         if repository.get_generated_invoice(generation_key) is not None:
             continue
 
         structures = _fees_for_enrollments(profile, enrollments)
+
         if not structures:
             raise ValidationError(
                 f"No fee structure is configured for {profile.program}, "
                 f"semester {semester}."
             )
 
-        amount = sum((structure.amount for structure in structures), Decimal("0.00"))
+        amount = sum(
+            (structure.amount for structure in structures),
+            Decimal("0.00"),
+        )
+
         invoice = FeeInvoice(
             invoice_number=f"INV-{uuid4().hex[:12].upper()}",
             student_id=user.id,
@@ -186,23 +209,35 @@ def generate_invoices():
             generation_key=generation_key,
             status="UNPAID",
         )
+
         pending.append((invoice, profile))
 
     try:
         for invoice, profile in pending:
             db.session.add(invoice)
+
             record_event(
                 event_type="FEE_INVOICE_CREATED",
+                user_id=editor.id if editor else None,
+                login_id=editor.login_id if editor else "SYSTEM",
                 details={
                     "invoice_number": invoice.invoice_number,
+                    "student_id": invoice.student_id,
+                    "semester": invoice.semester,
                     "amount": str(invoice.amount),
                     "currency": invoice.currency,
-                    "semester": invoice.semester,
                     "generated": True,
                 },
                 profile_id=profile.id,
+                previous_values=None,
+                new_values={
+                    "status": "UNPAID",
+                    "amount": str(invoice.amount),
+                },
             )
+
         repository.commit()
+
     except Exception:
         repository.rollback()
         raise
@@ -247,15 +282,20 @@ def initiate_payment(invoice_id, student_id):
     try:
         repository.create_payment(payment)
 
+        student = _student_user(student_id)
+
         record_event(
             event_type="FEE_PAYMENT_INITIATED",
+            user_id=student.id,
+            login_id=student.login_id,
             details={
                 "invoice_number": invoice.invoice_number,
                 "payment_id": payment.id,
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=payment.student_id,
+            previous_values=None,
+            new_values={"status": "PENDING"},
         )
 
         repository.commit()
@@ -286,7 +326,14 @@ def confirm_payment(payment_id, student_id, transaction_id, signature):
     if payment.student_id != student_id:
         raise ForbiddenError("You cannot confirm another student's payment.")
 
-    return _confirm_successful_payment(payment, transaction_id, signature)
+    student = _student_user(student_id)
+
+    return _confirm_successful_payment(
+        payment,
+        transaction_id,
+        signature,
+        actor=student,
+    )
 
 
 def confirm_payment_callback(order_id, transaction_id, signature):
@@ -295,10 +342,21 @@ def confirm_payment_callback(order_id, transaction_id, signature):
     if not payment:
         raise NotFoundError("Payment not found.")
 
-    return _confirm_successful_payment(payment, transaction_id, signature)
+    return _confirm_successful_payment(
+        payment,
+        transaction_id,
+        signature,
+        actor_login_id="PAYMENT_GATEWAY",
+    )
 
 
-def _confirm_successful_payment(payment, transaction_id, signature):
+def _confirm_successful_payment(
+    payment,
+    transaction_id,
+    signature,
+    actor=None,
+    actor_login_id=None,
+):
     if payment.status == "SUCCESS":
         if payment.gateway_transaction_id == transaction_id:
             return payment
@@ -336,15 +394,25 @@ def _confirm_successful_payment(payment, transaction_id, signature):
 
         record_event(
             event_type="FEE_PAYMENT_SUCCESS",
+            user_id=actor.id if actor else None,
+            login_id=actor.login_id if actor else actor_login_id,
             details={
                 "invoice_number": invoice.invoice_number,
+                "student_id": payment.student_id,
                 "payment_id": payment.id,
                 "receipt_number": payment.receipt_number,
                 "transaction_id": transaction_id,
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=payment.student_id,
+            previous_values={
+                "payment_status": "PENDING",
+                "invoice_status": "UNPAID",
+            },
+            new_values={
+                "payment_status": "SUCCESS",
+                "invoice_status": "PAID",
+            },
         )
 
         repository.commit()
@@ -365,6 +433,7 @@ def get_payment(payment_id, student_id):
         raise ForbiddenError("You cannot access another student's payment.")
 
     return payment
+
 
 FEE_REMINDER_DAYS_KEY = "fee_reminder_days_before_due"
 DEFAULT_FEE_REMINDER_DAYS = 3
