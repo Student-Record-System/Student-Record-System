@@ -1,21 +1,19 @@
+
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request, send_file
-from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.auth.access import current_user, roles_required
 from app.common.errors import ValidationError
 from app.common.roles import ADMIN, STUDENT
-from app.fees import repository, service
+from app.fees import service
 from app.fees.pdf import generate_receipt
 
 bp = Blueprint("fees", __name__, url_prefix="/api")
 
 
 def _user_id():
-    user = current_user()
-    return user.id
+    return current_user().id
 
 
 def _invoice_json(invoice):
@@ -44,16 +42,34 @@ def _structure_json(structure):
     }
 
 
+def _payment_json(payment):
+    return {
+        "id": payment.id,
+        "invoice_id": payment.invoice_id,
+        "amount": str(payment.amount),
+        "currency": payment.currency,
+        "status": payment.status,
+        "gateway": payment.gateway,
+        "gateway_order_id": payment.gateway_order_id,
+        "gateway_transaction_id": payment.gateway_transaction_id,
+        "receipt_number": payment.receipt_number,
+        "created_at": payment.created_at.isoformat(),
+        "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+    }
+
+
 @bp.post("/fees/structures")
 @roles_required(ADMIN)
 def create_fee_structure():
     data = request.get_json(silent=True) or {}
+
     structure = service.create_fee_structure(
         program=data.get("program"),
         semester=data.get("semester"),
         amount=data.get("amount"),
         course_code=data.get("course_code"),
     )
+
     return jsonify({
         "message": "Fee structure configured successfully.",
         "fee_structure": _structure_json(structure),
@@ -74,27 +90,12 @@ def list_fee_structures():
 @bp.post("/fees/invoices/generate")
 @roles_required(ADMIN)
 def generate_invoices():
-    invoices = service.generate_invoices()
+    invoices = service.generate_invoices(editor=current_user())
+
     return jsonify({
         "message": "Fee invoices generated successfully.",
         "invoices": [_invoice_json(invoice) for invoice in invoices],
     }), 201
-
-
-def _payment_json(payment):
-    return {
-        "id": payment.id,
-        "invoice_id": payment.invoice_id,
-        "amount": str(payment.amount),
-        "currency": payment.currency,
-        "status": payment.status,
-        "gateway": payment.gateway,
-        "gateway_order_id": payment.gateway_order_id,
-        "gateway_transaction_id": payment.gateway_transaction_id,
-        "receipt_number": payment.receipt_number,
-        "created_at": payment.created_at.isoformat(),
-        "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
-    }
 
 
 @bp.post("/fees/invoices")
@@ -111,6 +112,7 @@ def create_invoice():
         raise ValidationError("A valid student_id is required.")
 
     due_date = None
+
     if due_date_value:
         try:
             due_date = date.fromisoformat(due_date_value)
@@ -122,6 +124,7 @@ def create_invoice():
         description=description,
         amount=amount,
         due_date=due_date,
+        editor=current_user(),
     )
 
     return jsonify({
@@ -208,6 +211,7 @@ def download_receipt(payment_id):
         as_attachment=True,
         download_name=f"{payment.receipt_number}.pdf",
     )
+
 
 @bp.get("/fees/reminder-settings")
 @roles_required(ADMIN)

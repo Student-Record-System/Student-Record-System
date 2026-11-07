@@ -6,8 +6,7 @@ from app.common.errors import (
     ValidationError,
 )
 from app.common.roles import FACULTY
-from app.common.audit import record_event
-from app.common.models import AuditEvent
+from app.common.audit import record_event, get_audit_events
 from app.extensions import db
 from app.course import repository as course_repository
 from app.enrollment import repository as enrollment_repository
@@ -110,11 +109,12 @@ def submit_marks(course_code, faculty, data):
             "mark_id": mark.id,
             "course_code": course_code,
             "srn": values["srn"],
-            "previous_values": None,
-            "new_values": {
-                "internal_marks": mark.internal_marks,
-                "end_semester_marks": mark.end_semester_marks,
-            },
+        },
+        previous_values=None,
+        new_values={
+            "internal_marks": mark.internal_marks,
+            "end_semester_marks": mark.end_semester_marks,
+            "status": mark.status,
         },
     )
 
@@ -170,9 +170,9 @@ def modify_marks(course_code, srn, faculty, data):
             "mark_id": mark.id,
             "course_code": course_code,
             "srn": values["srn"],
-            "previous_values": previous_values,
-            "new_values": new_values,
         },
+        previous_values=previous_values,
+        new_values=new_values,
     )
 
     db.session.commit()
@@ -189,19 +189,13 @@ def grade_history(course_code, srn):
     if mark is None:
         raise NotFoundError("Marks not found.")
 
-    events = db.session.execute(
-        db.select(AuditEvent)
-        .where(
-            AuditEvent.event_type.in_([
-                "GRADE_CREATED",
-                "GRADE_MODIFIED",
-            ])
-        )
-        .order_by(
-            AuditEvent.created_at.asc(),
-            AuditEvent.id.asc(),
-        )
-    ).scalars().all()
+    events = get_audit_events(
+        event_types=[
+            "GRADE_CREATED",
+            "GRADE_MODIFIED",
+            "GRADE_APPROVED",
+        ]
+    )
 
     history = []
 
@@ -270,7 +264,7 @@ def review_pending_marks():
     ]
 
 
-def approve_marks(course_code, srn):
+def approve_marks(course_code, srn, editor):
     course_code = course_code.strip().upper()
     srn = srn.strip()
 
@@ -299,11 +293,32 @@ def approve_marks(course_code, srn):
             "ERR_ENROLLMENT_NOT_ACTIVE",
         )
 
+    previous_values = {
+        "status": mark.status,
+    }
+
+    new_values = {
+        "status": APPROVED,
+    }
+
     mark.status = APPROVED
 
     enrollment_repository.complete_enrollment(
         srn,
         course_code,
+    )
+
+    record_event(
+        event_type="GRADE_APPROVED",
+        user_id=editor.id,
+        login_id=editor.login_id,
+        details={
+            "mark_id": mark.id,
+            "course_code": course_code,
+            "srn": srn,
+        },
+        previous_values=previous_values,
+        new_values=new_values,
     )
 
     return _as_dict(repository.save_mark(mark))

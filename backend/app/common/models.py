@@ -36,3 +36,20 @@ class AuditEvent(db.Model):
     login_id = db.Column(db.String(50), nullable=True)
     details = db.Column(db.JSON, nullable=False, default=dict)
     created_at = db.Column(db.DateTime, nullable=False, default=Clock.now)
+
+
+class ArchivedAuditEvent(db.Model):
+    """Audit events retained after leaving the active audit table."""
+
+    __tablename__ = "archived_audit_events"
+
+    # Preserve the original audit event ID.
+    id = db.Column(db.Integer, primary_key=True)
+
+    event_type = db.Column(db.String(80), nullable=False)
+    user_id = db.Column(db.Integer, nullable=True, index=True)
+    profile_id = db.Column(db.Integer, nullable=True, index=True)
+    login_id = db.Column(db.String(50), nullable=True)
+    details = db.Column(db.JSON, nullable=False, default=dict)
+    created_at = db.Column(db.DateTime, nullable=False, index=True)
+    archived_at = db.Column(db.DateTime, nullable=False, default=Clock.now)
