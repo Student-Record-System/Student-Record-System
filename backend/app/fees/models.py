@@ -155,3 +155,58 @@ class FeeReminderLog(db.Model):
             name="check_fee_reminder_days_nonnegative",
         ),
     )
+class FeeEnrollmentOverride(db.Model):
+    __tablename__ = "fee_enrollment_overrides"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    student_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    semester = db.Column(
+        db.Integer,
+        nullable=False,
+    )
+
+    admin_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id"),
+        nullable=False,
+    )
+
+    reason = db.Column(
+        db.String(500),
+        nullable=False,
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=Clock.now,
+    )
+
+    student = db.relationship(
+        "User",
+        foreign_keys=[student_id],
+    )
+
+    administrator = db.relationship(
+        "User",
+        foreign_keys=[admin_user_id],
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "student_id",
+            "semester",
+            name="uq_fee_override_student_semester",
+        ),
+        db.CheckConstraint(
+            "semester BETWEEN 1 AND 8",
+            name="check_fee_override_semester",
+        ),
+    )

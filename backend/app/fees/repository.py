@@ -1,4 +1,6 @@
 
+from decimal import Decimal
+
 from app.auth.models import User
 from app.common.roles import STUDENT
 from app.extensions import db
@@ -8,6 +10,7 @@ from app.fees.models import (
     FeeStructure,
     Payment,
     FeeReminderLog,
+    FeeEnrollmentOverride,
 )
 from app.profile.models import StudentProfile
 
@@ -145,3 +148,41 @@ def create_fee_reminder(reminder):
     db.session.add(reminder)
     db.session.flush()
     return reminder
+
+
+# Fee enrollment restriction functions
+
+def get_student_outstanding_balance(student_id):
+    invoices = FeeInvoice.query.filter_by(
+        student_id=student_id,
+        status="UNPAID",
+    ).all()
+
+    return sum(
+        (invoice.amount for invoice in invoices),
+        Decimal("0.00"),
+    )
+
+
+def get_fee_enrollment_override(student_id, semester):
+    return FeeEnrollmentOverride.query.filter_by(
+        student_id=student_id,
+        semester=semester,
+    ).first()
+
+
+def create_fee_enrollment_override(override):
+    db.session.add(override)
+    db.session.flush()
+    return override
+
+
+def get_fee_enrollment_overrides(student_id=None):
+    query = FeeEnrollmentOverride.query
+
+    if student_id is not None:
+        query = query.filter_by(student_id=student_id)
+
+    return query.order_by(
+        FeeEnrollmentOverride.created_at.desc()
+    ).all()

@@ -1,11 +1,12 @@
-
 from datetime import date
 
 from flask import Blueprint, jsonify, request, send_file
 
 from app.auth.access import current_user, roles_required
+from app.auth.models import User
 from app.common.errors import ValidationError
 from app.common.roles import ADMIN, STUDENT
+from app.enrollment import service as enrollment_service
 from app.fees import service
 from app.fees.pdf import generate_receipt
 
@@ -15,6 +16,8 @@ bp = Blueprint("fees", __name__, url_prefix="/api")
 def _user_id():
     return current_user().id
 
+
+# ---- JSON serializers ----
 
 def _invoice_json(invoice):
     return {
@@ -26,7 +29,11 @@ def _invoice_json(invoice):
         "currency": invoice.currency,
         "semester": invoice.semester,
         "status": invoice.status,
-        "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
+        "due_date": (
+            invoice.due_date.isoformat()
+            if invoice.due_date
+            else None
+        ),
         "created_at": invoice.created_at.isoformat(),
     }
 
@@ -54,9 +61,27 @@ def _payment_json(payment):
         "gateway_transaction_id": payment.gateway_transaction_id,
         "receipt_number": payment.receipt_number,
         "created_at": payment.created_at.isoformat(),
-        "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+        "paid_at": (
+            payment.paid_at.isoformat()
+            if payment.paid_at
+            else None
+        ),
     }
 
+
+def _fee_override_json(override):
+    return {
+        "id": override.id,
+        "student_id": override.student_id,
+        "student_srn": override.student.login_id,
+        "semester": override.semester,
+        "admin_user_id": override.admin_user_id,
+        "reason": override.reason,
+        "created_at": override.created_at.isoformat(),
+    }
+
+
+# ---- fee structures ----
 
 @bp.post("/fees/structures")
 @roles_required(ADMIN)
@@ -87,6 +112,8 @@ def list_fee_structures():
     }), 200
 
 
+# ---- invoice generation and management ----
+
 @bp.post("/fees/invoices/generate")
 @roles_required(ADMIN)
 def generate_invoices():
@@ -94,7 +121,10 @@ def generate_invoices():
 
     return jsonify({
         "message": "Fee invoices generated successfully.",
-        "invoices": [_invoice_json(invoice) for invoice in invoices],
+        "invoices": [
+            _invoice_json(invoice)
+            for invoice in invoices
+        ],
     }), 201
 
 
@@ -108,8 +138,13 @@ def create_invoice():
     amount = data.get("amount")
     due_date_value = data.get("due_date")
 
-    if not isinstance(student_id, int) or isinstance(student_id, bool):
-        raise ValidationError("A valid student_id is required.")
+    if (
+        not isinstance(student_id, int)
+        or isinstance(student_id, bool)
+    ):
+        raise ValidationError(
+            "A valid student_id is required."
+        )
 
     due_date = None
 
@@ -117,7 +152,9 @@ def create_invoice():
         try:
             due_date = date.fromisoformat(due_date_value)
         except (TypeError, ValueError):
-            raise ValidationError("due_date must use YYYY-MM-DD format.")
+            raise ValidationError(
+                "due_date must use YYYY-MM-DD format."
+            )
 
     invoice = service.create_invoice(
         student_id=student_id,
@@ -139,9 +176,14 @@ def list_invoices():
     invoices = service.get_student_invoices(_user_id())
 
     return jsonify({
-        "invoices": [_invoice_json(invoice) for invoice in invoices]
+        "invoices": [
+            _invoice_json(invoice)
+            for invoice in invoices
+        ]
     }), 200
 
+
+# ---- payments ----
 
 @bp.post("/fees/invoices/<int:invoice_id>/pay")
 @roles_required(STUDENT)
@@ -201,7 +243,9 @@ def download_receipt(payment_id):
     )
 
     if payment.status != "SUCCESS":
-        raise ValidationError("A receipt is available only after successful payment.")
+        raise ValidationError(
+            "A receipt is available only after successful payment."
+        )
 
     pdf_buffer = generate_receipt(payment)
 
@@ -212,6 +256,8 @@ def download_receipt(payment_id):
         download_name=f"{payment.receipt_number}.pdf",
     )
 
+
+# ---- fee reminder settings ----
 
 @bp.get("/fees/reminder-settings")
 @roles_required(ADMIN)
@@ -227,7 +273,9 @@ def update_reminder_settings():
     data = request.get_json(silent=True) or {}
 
     if "days_before_due" not in data:
-        raise ValidationError("days_before_due is required.")
+        raise ValidationError(
+            "days_before_due is required."
+        )
 
     settings = service.configure_fee_reminders(
         data["days_before_due"]
@@ -236,4 +284,92 @@ def update_reminder_settings():
     return jsonify({
         "message": "Fee reminder settings updated successfully.",
         "reminder_settings": settings,
+    }), 200
+
+
+# ---- fee enrollment threshold ----
+
+@bp.get("/fees/enrollment-threshold")
+@roles_required(ADMIN)
+def get_enrollment_threshold():
+    threshold = (
+        enrollment_service.get_fee_enrollment_threshold()
+    )
+
+    return jsonify({
+        "threshold": str(threshold),
+        "currency": "INR",
+    }), 200
+
+
+@bp.put("/fees/enrollment-threshold")
+@roles_required(ADMIN)
+def update_enrollment_threshold():
+    data = request.get_json(silent=True) or {}
+
+    if "threshold" not in data:
+        raise ValidationError(
+            "threshold is required."
+        )
+
+    result = enrollment_service.set_fee_enrollment_threshold(
+        data["threshold"]
+    )
+
+    return jsonify({
+        "message": (
+            "Fee enrollment threshold updated successfully."
+        ),
+        "threshold": result["threshold"],
+        "currency": "INR",
+    }), 200
+
+
+# ---- fee enrollment overrides ----
+
+@bp.post("/fees/enrollment-overrides")
+@roles_required(ADMIN)
+def create_enrollment_override():
+    data = request.get_json(silent=True) or {}
+
+    override = service.create_fee_enrollment_override(
+        student_srn=data.get("student_srn"),
+        semester=data.get("semester"),
+        reason=data.get("reason"),
+        admin_user_id=_user_id(),
+    )
+
+    return jsonify({
+        "message": (
+            "Enrollment override recorded successfully."
+        ),
+        "override": _fee_override_json(override),
+    }), 201
+
+
+@bp.get("/fees/enrollment-overrides")
+@roles_required(ADMIN)
+def list_enrollment_overrides():
+    student_srn = request.args.get("student_srn")
+    student_id = None
+
+    if student_srn:
+        student = User.query.filter_by(
+            login_id=student_srn.strip()
+        ).first()
+
+        if student is None:
+            raise ValidationError("Student not found.")
+
+        student_id = student.id
+
+    overrides = service.get_fee_enrollment_overrides(
+        student_id
+    )
+
+    return jsonify({
+        "overrides": [
+            _fee_override_json(override)
+            for override in overrides
+        ]
     }), 200
