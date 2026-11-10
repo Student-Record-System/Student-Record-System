@@ -164,6 +164,13 @@ def _change_request_dict(change_request):
     }
 
 
+def list_change_requests(status="Pending Verification"):
+    return [
+        _change_request_dict(change_request)
+        for change_request in repository.list_change_requests(status)
+    ]
+
+
 def approve_change(request_id, editor):
     change_request = repository.get_change_request(request_id)
     if change_request is None:

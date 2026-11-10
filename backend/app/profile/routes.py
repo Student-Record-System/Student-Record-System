@@ -64,6 +64,12 @@ def approve_profile_change(request_id):
     return jsonify(service.approve_change(request_id, current_user())), 200
 
 
+@bp.get("/students/requests")
+@roles_required(ADMIN)
+def list_profile_change_requests():
+    return jsonify({"requests": service.list_change_requests()}), 200
+
+
 @bp.post("/students/requests/<int:request_id>/reject")
 @roles_required(ADMIN)
 def reject_profile_change(request_id):
@@ -76,6 +82,14 @@ def upload_student_document(srn):
     uploaded_file = request.files.get("file")
     result = document_service.upload_document(srn, uploaded_file)
     return jsonify(result), 201
+
+
+@bp.get("/students/<string:srn>/documents")
+@roles_required(ADMIN, STUDENT)
+def list_student_documents(srn):
+    user = current_user()
+    role = get_jwt().get("role")
+    return jsonify(document_service.list_documents(srn, user, role)), 200
 
 
 @bp.get("/students/<string:srn>/documents/<int:document_id>")

@@ -44,6 +44,16 @@ def get_change_request(request_id):
     return db.session.get(ProfileChangeRequest, request_id)
 
 
+def list_change_requests(status=None):
+    query = db.select(ProfileChangeRequest).order_by(
+        ProfileChangeRequest.created_at.desc(),
+        ProfileChangeRequest.id.desc(),
+    )
+    if status is not None:
+        query = query.where(ProfileChangeRequest.status == status)
+    return db.session.execute(query).scalars().all()
+
+
 def add_change_request(change_request):
     db.session.add(change_request)
     db.session.commit()

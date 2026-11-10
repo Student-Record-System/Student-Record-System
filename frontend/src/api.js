@@ -30,6 +30,10 @@ export class ApiError extends Error {
 
 export async function api(path, { method = "GET", body } = {}) {
   const headers = { "Content-Type": "application/json" };
+  return request(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+}
+
+async function request(path, { method = "GET", headers = {}, body } = {}) {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -38,7 +42,7 @@ export async function api(path, { method = "GET", body } = {}) {
     response = await fetch(`/api${path}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body,
     });
   } catch {
     throw new ApiError("Cannot reach the server. Is the backend running?", "ERR_NETWORK", 0);
@@ -54,4 +58,26 @@ export async function api(path, { method = "GET", body } = {}) {
     );
   }
   return data;
+}
+
+export async function apiForm(path, formData, { method = "POST" } = {}) {
+  return request(path, { method, body: formData });
+}
+
+export async function download(path, filename) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`/api${path}`, { headers });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(data?.error?.message || "Download failed.", data?.error?.code, response.status);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }

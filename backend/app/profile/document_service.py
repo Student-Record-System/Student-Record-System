@@ -9,6 +9,16 @@ from app.profile import document_repository, repository
 from app.profile.models import StudentDocument
 
 
+def _document_dict(document):
+    return {
+        "id": document.id,
+        "filename": document.original_name,
+        "content_type": document.content_type,
+        "size_bytes": document.size_bytes,
+        "uploaded_at": document.uploaded_at.isoformat(),
+    }
+
+
 def upload_document(srn, uploaded_file):
     if uploaded_file is None or not uploaded_file.filename:
         raise ValidationError("A document file is required.")
@@ -70,3 +80,20 @@ def get_document(srn, document_id, user, role):
         raise NotFoundError("Document not found.")
 
     return document
+
+
+def list_documents(srn, user, role):
+    profile = repository.get_by_srn(srn)
+    if profile is None:
+        raise NotFoundError("Student profile not found.")
+    if role == STUDENT and user.login_id != srn:
+        raise ForbiddenError("You do not have permission to access these documents.")
+    if role not in (ADMIN, STUDENT):
+        raise ForbiddenError("You do not have permission to access these documents.")
+    return {
+        "srn": profile.srn,
+        "documents": [
+            _document_dict(document)
+            for document in document_repository.list_by_profile(profile.id)
+        ],
+    }
