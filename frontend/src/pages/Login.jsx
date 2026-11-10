@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
 
 export default function Login() {
@@ -55,6 +55,7 @@ export default function Login() {
           {busy ? "Logging in..." : "Log in"}
         </button>
       </form>
+      <p><Link to="/reset-password">Forgot your password?</Link></p>
     </main>
   );
 }

@@ -18,6 +18,7 @@ export default function Layout() {
         <h1>Student Record System</h1>
         <nav aria-label="Main">
           <Link to="/">Dashboard</Link>
+          <Link to="/workspace">Workspace</Link>
           {isAdmin && <Link to="/students">Student profiles</Link>}
           {isAdmin && <Link to="/users/new">Create user</Link>}
         </nav>

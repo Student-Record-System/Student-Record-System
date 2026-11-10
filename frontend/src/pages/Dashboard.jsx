@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
 
 export default function Dashboard() {
@@ -9,14 +10,8 @@ export default function Dashboard() {
       <p>
         You are logged in as <strong>{user.role}</strong>.
       </p>
-      {isAdmin ? (
-        <p>Use the menu to create users and manage student profiles.</p>
-      ) : (
-        <p>
-          Your portal pages (courses, attendance, grades, fees) will appear here
-          as those features are built.
-        </p>
-      )}
+      <p>{isAdmin ? "Manage users and profiles, or open the administrator workspace." : "Open your workspace to use courses, attendance, grades, and fee services."}</p>
+      <Link to="/workspace">Open workspace</Link>
     </section>
   );
 }

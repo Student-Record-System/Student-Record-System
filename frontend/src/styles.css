@@ -92,3 +92,18 @@ button:disabled {
 .row input {
   flex: 1;
 }
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 1rem;
+}
+.action-card {
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #d8dce3;
+  border-radius: 8px;
+}
+.action-card h3 { margin-top: 0; }
+.action-card form { padding: 0; border: 0; margin: 0; }
+textarea { min-height: 6rem; resize: vertical; font: inherit; padding: 0.5rem; }
+.result { overflow: auto; max-height: 18rem; padding: 0.75rem; background: #eef0f4; font-size: 0.8rem; }

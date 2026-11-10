@@ -15,6 +15,14 @@ def get_by_profile_and_id(profile_id, document_id):
     ).scalar_one_or_none()
 
 
+def list_by_profile(profile_id):
+    return db.session.execute(
+        db.select(StudentDocument)
+        .filter_by(profile_id=profile_id)
+        .order_by(StudentDocument.uploaded_at.desc(), StudentDocument.id.desc())
+    ).scalars().all()
+
+
 def add(document):
     db.session.add(document)
     db.session.commit()
