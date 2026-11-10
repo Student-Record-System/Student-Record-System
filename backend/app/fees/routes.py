@@ -1,4 +1,3 @@
-
 from datetime import date
 
 from flask import Blueprint, jsonify, request, send_file
@@ -8,15 +7,14 @@ from app.auth.models import User
 from app.common.errors import ValidationError
 from app.common.roles import ADMIN, STUDENT
 from app.enrollment import service as enrollment_service
-from app.fees import repository, service
+from app.fees import service
 from app.fees.pdf import generate_receipt
 
 bp = Blueprint("fees", __name__, url_prefix="/api")
 
 
 def _user_id():
-    user = current_user()
-    return user.id
+    return current_user().id
 
 
 # ---- JSON serializers ----
@@ -119,7 +117,7 @@ def list_fee_structures():
 @bp.post("/fees/invoices/generate")
 @roles_required(ADMIN)
 def generate_invoices():
-    invoices = service.generate_invoices()
+    invoices = service.generate_invoices(editor=current_user())
 
     return jsonify({
         "message": "Fee invoices generated successfully.",
@@ -163,6 +161,7 @@ def create_invoice():
         description=description,
         amount=amount,
         due_date=due_date,
+        editor=current_user(),
     )
 
     return jsonify({

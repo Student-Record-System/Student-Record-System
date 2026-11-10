@@ -1,9 +1,11 @@
+
 from datetime import date
 
 from sqlalchemy.exc import IntegrityError
 
 from app.attendance import repository
 from app.attendance.models import ATTENDANCE_STATUSES, Attendance
+from app.common.audit import record_event
 from app.common.errors import (
     ConflictError,
     ForbiddenError,
@@ -31,10 +33,12 @@ def _attendance_threshold():
         raise ValidationError(
             "The configured attendance threshold must be a number between 0 and 100."
         ) from exc
+
     if not 0 <= threshold <= 100:
         raise ValidationError(
             "The configured attendance threshold must be a number between 0 and 100."
         )
+
     return threshold
 
 
@@ -49,6 +53,7 @@ def _notify_threshold_crossings(course, records, roster, threshold):
         )
         previous_present = present - (record.status == "Present")
         previous_total = total - 1
+
         previous_percentage = _attendance_percentage(
             previous_present,
             previous_total,
@@ -63,10 +68,12 @@ def _notify_threshold_crossings(course, records, roster, threshold):
                 or previous_percentage >= threshold
             )
         )
+
         if not crossed_threshold:
             continue
 
         profile = profiles[record.srn]
+
         notifications.send(
             recipient=profile.email,
             subject=f"Attendance below {threshold:g}% minimum",
@@ -124,13 +131,17 @@ def record_attendance(course_code, faculty, data):
 
     for record in records:
         if not isinstance(record, dict):
-            raise ValidationError("Each attendance record must be a JSON object.")
+            raise ValidationError(
+                "Each attendance record must be a JSON object."
+            )
 
         srn = record.get("srn")
         status = record.get("status")
 
         if not isinstance(srn, str) or not srn.strip():
-            raise ValidationError("Every attendance record must include an SRN.")
+            raise ValidationError(
+                "Every attendance record must include an SRN."
+            )
 
         srn = srn.strip()
 
@@ -154,7 +165,10 @@ def record_attendance(course_code, faculty, data):
             )
 
         if repository.get_attendance(
-            srn, course.code, attendance_date, session
+            srn,
+            course.code,
+            attendance_date,
+            session,
         ) is not None:
             raise ConflictError(
                 f"Attendance already exists for student {srn} "
@@ -175,14 +189,40 @@ def record_attendance(course_code, faculty, data):
 
     try:
         threshold = _attendance_threshold()
+
+        # Record an audit event for every attendance entry.
+        for record in attendance_records:
+            record_event(
+                event_type="ATTENDANCE_CREATED",
+                user_id=faculty.id,
+                login_id=faculty.login_id,
+                details={
+                    "srn": record.srn,
+                    "course_code": record.course_code,
+                    "attendance_date": record.attendance_date.isoformat(),
+                    "session": record.session,
+                },
+                previous_values=None,
+                new_values={
+                    "status": record.status,
+                },
+            )
+
+        # Attendance records and audit events are committed together.
         saved_records = repository.add_all(attendance_records)
+
     except IntegrityError:
         raise ConflictError(
             "Attendance already exists for one or more students in this session.",
             "ERR_DUPLICATE_ATTENDANCE",
         )
 
-    _notify_threshold_crossings(course, saved_records, roster, threshold)
+    _notify_threshold_crossings(
+        course,
+        saved_records,
+        roster,
+        threshold,
+    )
 
     return {
         "course_code": course.code,
@@ -196,6 +236,7 @@ def record_attendance(course_code, faculty, data):
             for item in saved_records
         ],
     }
+
 
 def _attendance_percentage(present_sessions, total_sessions):
     if total_sessions == 0:
@@ -213,7 +254,8 @@ def _summary_record(srn, present_sessions, total_sessions):
         "absent_sessions": absent_sessions,
         "total_sessions": total_sessions,
         "attendance_percentage": _attendance_percentage(
-            present_sessions, total_sessions
+            present_sessions,
+            total_sessions,
         ),
     }
 
@@ -255,12 +297,15 @@ def student_attendance_summary(srn):
                 "absent_sessions": total - present,
                 "total_sessions": total,
                 "attendance_percentage": _attendance_percentage(
-                    present, total
+                    present,
+                    total,
                 ),
             }
             for course_code, present, total in rows
         ],
     }
+
+
 def student_attendance_records(srn):
     profile = profile_repository.get_by_srn(srn)
 

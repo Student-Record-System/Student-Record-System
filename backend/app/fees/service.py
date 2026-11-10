@@ -51,9 +51,7 @@ def _student_user(student_id):
     return user
 
 
-# ---- invoices ----
-
-def create_invoice(student_id, description, amount, due_date=None):
+def create_invoice(student_id, description, amount, due_date=None, editor=None):
     student = _student_user(student_id)
 
     if not isinstance(description, str) or not description.strip():
@@ -74,12 +72,19 @@ def create_invoice(student_id, description, amount, due_date=None):
 
         record_event(
             event_type="FEE_INVOICE_CREATED",
+            user_id=editor.id if editor else None,
+            login_id=editor.login_id if editor else "SYSTEM",
             details={
                 "invoice_number": invoice.invoice_number,
+                "student_id": student.id,
                 "amount": str(invoice.amount),
                 "currency": invoice.currency,
             },
-            profile_id=student.id,
+            previous_values=None,
+            new_values={
+                "status": "UNPAID",
+                "amount": str(invoice.amount),
+            },
         )
 
         repository.commit()
@@ -162,10 +167,7 @@ def _fees_for_enrollments(profile, enrollments):
         for enrollment in enrollments
     ]
 
-    if all(
-        structure is not None
-        for structure in course_structures
-    ):
+    if all(structure is not None for structure in course_structures):
         return course_structures
 
     program_structure = repository.get_fee_structure(
@@ -182,7 +184,7 @@ def _fees_for_enrollments(profile, enrollments):
 
 # ---- invoice generation ----
 
-def generate_invoices():
+def generate_invoices(editor=None):
     window_end = get_setting(WINDOW_END_KEY)
 
     if window_end is None:
@@ -258,14 +260,22 @@ def generate_invoices():
 
             record_event(
                 event_type="FEE_INVOICE_CREATED",
+                user_id=editor.id if editor else None,
+                login_id=editor.login_id if editor else "SYSTEM",
                 details={
                     "invoice_number": invoice.invoice_number,
+                    "student_id": invoice.student_id,
+                    "semester": invoice.semester,
                     "amount": str(invoice.amount),
                     "currency": invoice.currency,
-                    "semester": invoice.semester,
                     "generated": True,
                 },
                 profile_id=profile.id,
+                previous_values=None,
+                new_values={
+                    "status": "UNPAID",
+                    "amount": str(invoice.amount),
+                },
             )
 
         repository.commit()
@@ -279,7 +289,6 @@ def generate_invoices():
 
 def get_student_invoices(student_id):
     return repository.get_student_invoices(student_id)
-
 
 # ---- payments ----
 
@@ -329,15 +338,20 @@ def initiate_payment(invoice_id, student_id):
     try:
         repository.create_payment(payment)
 
+        student = _student_user(student_id)
+
         record_event(
             event_type="FEE_PAYMENT_INITIATED",
+            user_id=student.id,
+            login_id=student.login_id,
             details={
                 "invoice_number": invoice.invoice_number,
                 "payment_id": payment.id,
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=payment.student_id,
+            previous_values=None,
+            new_values={"status": "PENDING"},
         )
 
         repository.commit()
@@ -375,10 +389,13 @@ def confirm_payment(
             "You cannot confirm another student's payment."
         )
 
+    student = _student_user(student_id)
+
     return _confirm_successful_payment(
         payment,
         transaction_id,
         signature,
+        actor=student,
     )
 
 
@@ -396,6 +413,7 @@ def confirm_payment_callback(
         payment,
         transaction_id,
         signature,
+        actor_login_id="PAYMENT_GATEWAY",
     )
 
 
@@ -403,6 +421,8 @@ def _confirm_successful_payment(
     payment,
     transaction_id,
     signature,
+    actor=None,
+    actor_login_id=None,
 ):
     if payment.status == "SUCCESS":
         if payment.gateway_transaction_id == transaction_id:
@@ -449,15 +469,25 @@ def _confirm_successful_payment(
 
         record_event(
             event_type="FEE_PAYMENT_SUCCESS",
+            user_id=actor.id if actor else None,
+            login_id=actor.login_id if actor else actor_login_id,
             details={
                 "invoice_number": invoice.invoice_number,
+                "student_id": payment.student_id,
                 "payment_id": payment.id,
                 "receipt_number": payment.receipt_number,
                 "transaction_id": transaction_id,
                 "amount": str(payment.amount),
                 "currency": payment.currency,
             },
-            profile_id=payment.student_id,
+            previous_values={
+                "payment_status": "PENDING",
+                "invoice_status": "UNPAID",
+            },
+            new_values={
+                "payment_status": "SUCCESS",
+                "invoice_status": "PAID",
+            },
         )
 
         repository.commit()
@@ -480,8 +510,6 @@ def get_payment(payment_id, student_id):
         )
 
     return payment
-
-
 # ---- fee reminder settings ----
 
 FEE_REMINDER_DAYS_KEY = "fee_reminder_days_before_due"
@@ -657,12 +685,17 @@ def create_fee_enrollment_override(
         record_event(
             event_type="FEE_ENROLLMENT_OVERRIDE_CREATED",
             user_id=admin_user_id,
-            profile_id=student.id,
             details={
+                "student_id": student.id,
                 "student_srn": student.login_id,
                 "semester": semester,
                 "reason": reason,
                 "admin_user_id": admin_user_id,
+            },
+            previous_values=None,
+            new_values={
+                "semester": semester,
+                "reason": reason,
             },
         )
 

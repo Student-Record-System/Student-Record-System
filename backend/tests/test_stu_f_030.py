@@ -9,7 +9,7 @@ from app.course.models import Course
 from app.enrollment.models import ENROLLED, Enrollment
 from app.extensions import db
 from app.profile.models import StudentProfile
-
+from app.common.models import AuditEvent
 
 PASSWORD = "Passw0rd!"
 SRN1 = "PES2UG24CS252"
@@ -300,3 +300,49 @@ def test_attendance_for_unknown_course_returns_404(client):
 
     assert response.status_code == 404
     assert response.get_json()["error"]["code"] == "ERR_NOT_FOUND"
+
+def test_attendance_creation_generates_audit_events(client):
+    headers = setup_course_with_students(client)
+
+    response = client.post(
+        "/api/courses/CS301/attendance",
+        json=attendance_payload(),
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+
+    events = db.session.execute(
+        db.select(AuditEvent)
+        .where(AuditEvent.event_type == "ATTENDANCE_CREATED")
+        .order_by(AuditEvent.id)
+    ).scalars().all()
+
+    assert len(events) == 2
+
+    for event in events:
+        assert event.user_id is not None
+        assert event.login_id == "faculty"
+        assert event.created_at is not None
+
+    events_by_srn = {
+        event.details["srn"]: event
+        for event in events
+    }
+
+    present_event = events_by_srn[SRN1]
+    absent_event = events_by_srn[SRN2]
+
+    assert present_event.details["course_code"] == "CS301"
+    assert present_event.details["attendance_date"] == "2026-11-01"
+    assert present_event.details["session"] == "1"
+
+    assert present_event.details["previous_values"] is None
+    assert present_event.details["new_values"] == {
+        "status": "Present",
+    }
+
+    assert absent_event.details["previous_values"] is None
+    assert absent_event.details["new_values"] == {
+        "status": "Absent",
+    }
